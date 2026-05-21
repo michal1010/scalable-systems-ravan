@@ -1,3 +1,5 @@
+from time import perf_counter
+
 import torch
 from sklearn.datasets import fetch_20newsgroups
 from torch.utils.data import DataLoader, TensorDataset
@@ -52,6 +54,13 @@ model = AutoModelForSequenceClassification.from_pretrained(
 ).to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 
+if device.type == "cuda":
+    torch.cuda.synchronize()
+training_start = perf_counter()
+
+for parameter in model.classifier.parameters():
+    parameter.requires_grad = False
+
 for epoch in range(epochs):
     model.train()
     for input_ids, attention_mask, labels in train_loader:
@@ -69,6 +78,11 @@ for epoch in range(epochs):
         optimizer.step()
 
     print(f"finished epoch {epoch + 1}")
+
+if device.type == "cuda":
+    torch.cuda.synchronize()
+training_time = perf_counter() - training_start
+print(f"training time: {training_time:.2f} seconds")
 
 model.eval()
 correct = 0
