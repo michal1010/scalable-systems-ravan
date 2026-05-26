@@ -63,8 +63,8 @@ def add_ravan_to_bert_attention(model, heads, rank):
         attention.value = RavanLinear(attention.value, heads, rank)
 
     # A new task head still has to learn the 20 Newsgroups labels.
-    # for parameter in model.classifier.parameters():
-    #     parameter.requires_grad = True
+    for parameter in model.classifier.parameters():
+        parameter.requires_grad = True
 
 
 def print_trainable_parameters(model):
