@@ -1,4 +1,4 @@
-"""Flower clients for classic BERT fine-tuning."""
+"""Flower clients for RAVAN BERT fine-tuning."""
 
 import logging
 
