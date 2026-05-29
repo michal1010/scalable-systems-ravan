@@ -38,6 +38,7 @@ from .model import (
     count_params, inject_ravan, make_distilbert,
     print_param_summary,
 )
+from .plot import plot_all, plot_single_run
 from .server import ravan_aggregate, ravan_get_upload, ravan_load_global
 from .utils import make_run_name, save_config, save_results
 from .warmup import federated_svd_init
@@ -166,6 +167,11 @@ def run(args):
 
     save_config(cfg, run_name)
     save_results(final, history, run_name)
+
+    # ── visualize ─────────────────────────────────────────────────────────────
+    print("\nGenerating plots...")
+    plot_single_run(run_name, history)
+    plot_all()
 
 
 def main():
