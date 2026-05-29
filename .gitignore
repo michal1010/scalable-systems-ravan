@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Slurm logs (keep the logs/ dir via .gitkeep, ignore the actual log files)
+logs/*.out
+logs/*.err
+
+# Results (data files and plots — too large for git)
+results/*/
+results/*.csv
+results/*.png
+
+# HuggingFace cache
+.cache/
+
+# IDE
+.idea/
