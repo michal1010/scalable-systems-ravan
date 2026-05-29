@@ -24,6 +24,8 @@ module use /opt/insy/modulefiles
 module load miniconda
 conda activate ravan
 
+export HF_HOME=$HOME/.cache/huggingface
+
 mkdir -p logs results
 
 srun python -m federated.train_ravan \

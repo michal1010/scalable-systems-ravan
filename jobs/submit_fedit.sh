@@ -26,8 +26,7 @@ module use /opt/insy/modulefiles
 module load miniconda
 conda activate ravan          # change to your env name
 
-# Keep HuggingFace cache on fast scratch if available
-# export HF_HOME=/scratch/$USER/hf_cache
+export HF_HOME=$HOME/.cache/huggingface
 
 # ── run ──────────────────────────────────────────────────────────────────────
 mkdir -p logs results
