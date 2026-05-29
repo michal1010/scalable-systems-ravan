@@ -1,0 +1,1 @@
+# federated — single-machine FL simulation for Ravan research
