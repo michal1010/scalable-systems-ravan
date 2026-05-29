@@ -38,8 +38,9 @@ from .model import (
     count_params, inject_ravan, make_distilbert,
     print_param_summary,
 )
+from .plot import plot_all, plot_single_run
 from .server import ravan_aggregate, ravan_get_upload, ravan_load_global
-from .utils import make_run_name, save_config, save_results
+from .utils import make_run_dir, make_run_name, save_config, save_results
 from .warmup import federated_svd_init
 
 
@@ -136,8 +137,8 @@ def run(args):
                   f"time={elapsed:.1f}s")
 
     # ── save ──────────────────────────────────────────────────────────────────
-    extra    = f"{args.init}"
-    run_name = make_run_name(f"ravan_{args.init}", args.split, args.seed, extra="")
+    run_name = make_run_name(f"ravan_{args.init}", args.split, args.seed)
+    run_dir  = make_run_dir(run_name)
 
     cfg = vars(args).copy()
     cfg.update({"trainable_params": trainable, "total_params": total, "device": str(device)})
@@ -164,8 +165,13 @@ def run(args):
         final["warmup_clients"] = args.warmup_clients
         final["warmup_steps"]   = args.warmup_steps
 
-    save_config(cfg, run_name)
-    save_results(final, history, run_name)
+    save_config(cfg, run_dir)
+    save_results(final, history, run_dir)
+
+    # ── visualize ─────────────────────────────────────────────────────────────
+    print("\nGenerating plots...")
+    plot_single_run(run_name, history, run_dir)
+    plot_all()
 
 
 def main():

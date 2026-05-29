@@ -24,8 +24,9 @@ import torch
 from .client import local_train, evaluate
 from .data import build_federated_loaders
 from .model import count_params, inject_lora, make_distilbert, print_param_summary
+from .plot import plot_all, plot_single_run
 from .server import fedit_aggregate, fedit_get_state, fedit_load_state
-from .utils import make_run_name, save_config, save_results
+from .utils import make_run_dir, make_run_name, save_config, save_results
 
 
 def run(args):
@@ -96,6 +97,7 @@ def run(args):
 
     # ── save ──────────────────────────────────────────────────────────────────
     run_name = make_run_name("fedit", args.split, args.seed)
+    run_dir  = make_run_dir(run_name)
 
     cfg = vars(args).copy()
     cfg.update({"trainable_params": trainable, "total_params": total, "device": str(device)})
@@ -116,8 +118,13 @@ def run(args):
         "best_test_acc":   max(r["test_acc"] for r in history),
     }
 
-    save_config(cfg, run_name)
-    save_results(final, history, run_name)
+    save_config(cfg, run_dir)
+    save_results(final, history, run_dir)
+
+    # ── visualize ─────────────────────────────────────────────────────────────
+    print("\nGenerating plots...")
+    plot_single_run(run_name, history, run_dir)
+    plot_all()
 
 
 def main():

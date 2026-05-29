@@ -83,17 +83,33 @@ $$r_\text{Ravan} \approx \sqrt{\frac{2 \cdot d \cdot r_\text{LoRA}}{h}} = \sqrt{
 
 Adapter params per layer: FedIT = 2 × d × r = 12,288; Ravan = h × r² + h ≈ 12,104.
 
-## Results
+## Results and Visualizations
 
-Results are written to `results/` after each run:
+Plots and data are written to `results/` automatically at the end of every run — no extra steps needed.
 
 ```
 results/
   fedit_noniid_seed0_<timestamp>_config.json    # full run config
   fedit_noniid_seed0_<timestamp>_summary.json   # final + best accuracy
   fedit_noniid_seed0_<timestamp>_rounds.csv     # per-round test_acc, time
+  fedit_noniid_seed0_<timestamp>_curve.png      # learning curve for this run
   all_results.csv                               # one row per experiment (accumulates)
+  comparison_iid.png                            # } regenerated after every run
+  comparison_noniid.png                         # } once enough results exist
+  iid_vs_noniid.png                             # }
+  final_accuracy.png                            # }
 ```
+
+### What each plot shows
+
+| Plot | Generated when | Answers |
+|---|---|---|
+| `<run>_curve.png` | Every run | Per-run convergence — sanity check |
+| `comparison_iid.png` / `comparison_noniid.png` | ≥2 methods have results | All methods on same axes, mean±std across seeds (RQ1 + RQ2) |
+| `iid_vs_noniid.png` | Both splits have results | Side-by-side IID vs Non-IID — shows whether Ravan's advantage widens under heterogeneity (key report figure) |
+| `final_accuracy.png` | ≥2 methods have results | Grouped bar chart per method × split, error bars = std across seeds |
+
+The comparison plots regenerate from scratch every time a run completes, accumulating results across jobs. If only one method or one split has finished so far, the plots that need both are simply skipped until the data exists.
 
 ## Correctness Tests
 

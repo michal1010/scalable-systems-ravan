@@ -17,13 +17,15 @@
 #SBATCH --output=logs/ravan_gs_%j.out
 #SBATCH --error=logs/ravan_gs_%j.err
 
+cd $SLURM_SUBMIT_DIR
+
 module use /opt/insy/modulefiles
 module load miniconda
 conda activate ravan
 
 export HF_HOME=$HOME/.cache/huggingface
 
-mkdir -p logs results
+mkdir -p results
 
 srun python -m federated.train_ravan \
     --init gram_schmidt \
