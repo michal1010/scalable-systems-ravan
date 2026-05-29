@@ -21,6 +21,10 @@
 #SBATCH --output=logs/fedit_%j.out
 #SBATCH --error=logs/fedit_%j.err
 
+# ── working directory ────────────────────────────────────────────────────────
+# Always run from the project root (wherever sbatch was called from)
+cd $SLURM_SUBMIT_DIR
+
 # ── environment ──────────────────────────────────────────────────────────────
 module use /opt/insy/modulefiles
 module load miniconda
@@ -29,7 +33,7 @@ conda activate ravan          # change to your env name
 export HF_HOME=$HOME/.cache/huggingface
 
 # ── run ──────────────────────────────────────────────────────────────────────
-mkdir -p logs results
+mkdir -p results
 
 srun python -m federated.train_fedit \
     --split noniid \
