@@ -97,6 +97,12 @@ def _load_summaries(results_dir: Path) -> pd.DataFrame:
 
     df = pd.DataFrame(records)
 
+    # Normalise accuracy column: support both old (final_test_acc) and new (final_acc)
+    if "final_acc" not in df.columns and "final_test_acc" in df.columns:
+        df["final_acc"] = df["final_test_acc"]
+    if "final_test_acc" not in df.columns and "final_acc" in df.columns:
+        df["final_test_acc"] = df["final_acc"]
+
     keep = {"method", "split", "seed"}
     if keep.issubset(df.columns):
         df = (df.sort_values("run_name")
@@ -190,8 +196,10 @@ def plot_single_run(
     print(f"Curve    → {path}")
 
 
-def plot_all(results_dir: Path = RESULTS_DIR) -> None:
+def plot_all(results_dir: Path | None = None) -> None:
     """Regenerate all comparison figures from every completed run."""
+    if results_dir is None:
+        results_dir = RESULTS_DIR
     summaries = _load_summaries(results_dir)
     if summaries.empty or "method" not in summaries.columns:
         return

@@ -2,6 +2,7 @@
 
 import csv
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -9,18 +10,32 @@ RESULTS_DIR = Path(__file__).parent.parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
 
-def make_run_name(method: str, split: str, seed: int, extra: str = "") -> str:
-    ts   = time.strftime("%Y%m%d_%H%M%S")
-    name = f"{method}_{split}_seed{seed}"
-    if extra:
-        name += f"_{extra}"
-    name += f"_{ts}"
-    return name
+def get_git_hash() -> str:
+    """Return the short HEAD commit hash, or 'unknown' if not in a git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
 
 
-def make_run_dir(run_name: str) -> Path:
-    """Create and return results/<run_name>/ — unique folder for this run."""
-    run_dir = RESULTS_DIR / run_name
+def make_run_name(method: str, split: str, seed: int) -> str:
+    """Build a unique, sortable run identifier.
+
+    Format: <method>_<split>_seed<seed>_<YYYYMMDD_HHMMSS>
+    The method string should already encode init mode (e.g. "ravan_svd").
+    """
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    return f"{method}_{split}_seed{seed}_{ts}"
+
+
+def make_run_dir(run_name: str, output_dir: str | None = None) -> Path:
+    """Create and return <output_dir>/<run_name>/ — unique folder for this run."""
+    base = Path(output_dir) if output_dir else RESULTS_DIR
+    run_dir = base / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
@@ -32,15 +47,31 @@ def save_config(cfg: dict, run_dir: Path) -> None:
     print(f"Config  → {path}")
 
 
-def save_results(metrics: dict, history: list[dict], run_dir: Path) -> None:
-    """Save summary JSON + per-round CSV inside run_dir, append to master CSV."""
-    # --- summary JSON (inside run folder) ---
+def save_results(
+    summary: dict,
+    history: list[dict],
+    run_dir: Path,
+    results_dir: Path | None = None,
+) -> None:
+    """Save summary JSON + per-round CSV inside run_dir, append to master CSV.
+
+    Args:
+        summary     : flat dict with all summary fields (becomes summary.json)
+        history     : list of per-round dicts (becomes rounds.csv)
+        run_dir     : destination directory for this run's files
+        results_dir : top-level results directory for all_results.csv
+                      (defaults to RESULTS_DIR)
+    """
+    if results_dir is None:
+        results_dir = RESULTS_DIR
+
+    # --- summary JSON ---
     summary_path = run_dir / "summary.json"
     with open(summary_path, "w") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(summary, f, indent=2)
     print(f"Summary → {summary_path}")
 
-    # --- per-round CSV (inside run folder) ---
+    # --- per-round CSV ---
     if history:
         csv_path = run_dir / "rounds.csv"
         fieldnames = list(history[0].keys())
@@ -51,11 +82,26 @@ def save_results(metrics: dict, history: list[dict], run_dir: Path) -> None:
         print(f"Rounds  → {csv_path}")
 
     # --- master CSV at top-level results/ (one row per experiment) ---
-    master      = RESULTS_DIR / "all_results.csv"
-    write_header = not master.exists()
-    with open(master, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(metrics.keys()))
-        if write_header:
-            writer.writeheader()
-        writer.writerow(metrics)
+    master = results_dir / "all_results.csv"
+
+    existing_rows: list[dict] = []
+    existing_fields: list[str] = []
+    if master.exists():
+        try:
+            with open(master, "r", newline="") as f:
+                reader = csv.DictReader(f)
+                existing_fields = list(reader.fieldnames or [])
+                existing_rows   = list(reader)
+        except Exception:
+            pass
+
+    new_fields = list(summary.keys())
+    all_fields = existing_fields + [f for f in new_fields if f not in existing_fields]
+
+    with open(master, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=all_fields, extrasaction="ignore")
+        writer.writeheader()
+        for row in existing_rows:
+            writer.writerow({k: row.get(k) for k in all_fields})
+        writer.writerow({k: summary.get(k) for k in all_fields})
     print(f"Master  → {master}")
