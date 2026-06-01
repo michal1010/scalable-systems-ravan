@@ -5,6 +5,9 @@
 # The SVD warm-up adds a short federated LoRA phase before the main
 # Ravan training.  Extra time budget is included in the wall-clock limit.
 #
+# Prerequisites (run once from login node):
+#   mkdir -p logs
+#
 # Usage:
 #   sbatch jobs/submit_ravan_svd.sh
 #   sbatch jobs/submit_ravan_svd.sh --split iid --seed 2
@@ -26,7 +29,7 @@ module use /opt/insy/modulefiles
 module load miniconda
 conda activate ravan
 
-export HF_HOME=$HOME/.cache/huggingface
+export HF_HOME=/tudelft.net/staff-umbrella/<project>/.cache/huggingface
 
 mkdir -p results
 

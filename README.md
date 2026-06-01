@@ -149,44 +149,152 @@ python -m pytest tests/ -v
 
 ## Running on DAIC (TU Delft Cluster)
 
-### Environment setup (once)
+### Storage: use project storage, not home
+
+DAIC home directories (`/home/nfs/<NetID>`) have a small quota (~10 GB). 18 experiment runs
+(model states, CSVs, plots) can easily exceed that. Put the repo — and therefore the results —
+on **project storage**:
+
+```
+/tudelft.net/staff-umbrella/<DAIC_PROJECT>/
+```
+
+`<DAIC_PROJECT>` is the folder name that was allocated for your group on DAIC.
+To find it, log in and run:
 
 ```bash
-# On a login node
+ls /tudelft.net/staff-umbrella/
+```
+
+It is not necessarily `scalable-systems-ravan`; it could be your supervisor's group name or
+a separately requested allocation. Ask your supervisor if you are unsure which one to use.
+
+> **All local commands below are run from your local project root:**
+> `~/Desktop/Scalable/scalable-systems-ravan$`
+>
+> **All cluster commands are run from the project root on the cluster:**
+> `/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan$`
+
+---
+
+### Step 1 — Upload the repo to the cluster
+
+Run from `~/Desktop/Scalable/scalable-systems-ravan` on your laptop:
+
+```bash
+# On campus (or with eduVPN active)
+rsync --progress -avz --no-perms \
+    ./ \
+    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/
+
+# Off campus without VPN — route through the bastion
+rsync --progress -avz --no-perms \
+    -e "ssh -J <NetID>@linux-bastion.tudelft.nl" \
+    ./ \
+    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/
+```
+
+The trailing `/` on `./` is important — it copies the *contents* of the current directory, not
+the directory itself.
+
+---
+
+### Step 2 — Environment setup (once, on the login node)
+
+```bash
+ssh <NetID>@login.daic.tudelft.nl
+cd /tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan
+
 module use /opt/insy/modulefiles
 module load miniconda
-conda create -n ravan python=3.10
+conda create -n ravan python=3.10 -y
 conda activate ravan
 pip install -r requirements.txt
 ```
 
-### Submit individual jobs
+**Set the HuggingFace cache to project storage** to avoid filling your home quota.
+Edit the three `jobs/submit_*.sh` files and replace the `HF_HOME` line:
 
 ```bash
-sbatch jobs/submit_fedit.sh
-sbatch jobs/submit_ravan_gs.sh
-sbatch jobs/submit_ravan_svd.sh
-
-# Override defaults
-sbatch jobs/submit_fedit.sh --split iid --seed 2
-sbatch jobs/submit_ravan_svd.sh --split noniid --seed 1
+# Change this line in jobs/submit_fedit.sh, submit_ravan_gs.sh, submit_ravan_svd.sh:
+export HF_HOME=/tudelft.net/staff-umbrella/<DAIC_PROJECT>/.cache/huggingface
 ```
 
-### Full sweep — 18 jobs (3 methods × 2 splits × 3 seeds)
+Then create the cache dir once:
 
 ```bash
+mkdir -p /tudelft.net/staff-umbrella/<DAIC_PROJECT>/.cache/huggingface
+```
+
+---
+
+### Step 3 — Submit the full sweep (18 jobs)
+
+```bash
+# On the cluster, from the project root:
+cd /tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan
 bash jobs/sweep.sh
 ```
 
-### Monitoring
+`sweep.sh` creates `logs/` and `results/` before submitting — Slurm writes the log file
+*before* the job script body runs, so the directory must exist at submission time.
 
-```bash
-squeue -u $USER                  # job status
-seff <jobID>                     # efficiency after completion
-tail -f logs/fedit_<jobID>.out   # live output
+Results land in:
+```
+/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/results/
 ```
 
-### Cluster specs (DAIC general partition)
+---
+
+### Step 4 — Monitor jobs
+
+```bash
+squeue -u $USER                                              # live queue
+tail -f logs/fedit_<jobID>.out                               # stream output
+seff <jobID>                                                 # GPU/memory efficiency
+sacct -j <jobID> --format=JobID,State,Elapsed,MaxRSS         # accounting
+```
+
+---
+
+### Step 5 — Generate paper assets (on login node, after all jobs finish)
+
+```bash
+cd /tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan
+python -m scripts.generate_report_assets --results_dir results --out_dir paper_assets
+```
+
+---
+
+### Step 6 — Download results to your local machine
+
+Run from `~/Desktop/Scalable/scalable-systems-ravan` on your laptop:
+
+```bash
+# Just the paper assets (tables + figures) — small, recommended first download
+rsync --progress -avz --no-perms \
+    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/paper_assets/ \
+    ./paper_assets/
+
+# Full raw results (all CSVs, per-run JSONs, curves) — larger
+rsync --progress -avz --no-perms \
+    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/results/ \
+    ./results/
+
+# Off campus — add bastion jump to both commands above:
+rsync --progress -avz --no-perms \
+    -e "ssh -J <NetID>@linux-bastion.tudelft.nl" \
+    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/paper_assets/ \
+    ./paper_assets/
+
+# Single file (e.g. just the master CSV):
+scp <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/results/all_results.csv \
+    ./results/
+```
+
+---
+
+### Cluster specs (DAIC general partition, QoS short — max 4 h/job)
 
 | GPU | Count | VRAM |
 |---|---|---|
@@ -195,16 +303,7 @@ tail -f logs/fedit_<jobID>.out   # live output
 | V100 | 11 | 32 GB |
 | RTX 2080 Ti | 24 | 11 GB |
 
-Partition `general`, QoS `short` (max 4 hours per job).
-Request specific GPU: `#SBATCH --gres=gpu:a40:1`
-
-### After sweep: generate paper assets on the cluster
-
-```bash
-# On a login node after all jobs complete:
-python -m scripts.generate_report_assets --results_dir results --out_dir paper_assets
-# Then download paper_assets/ to your local machine
-```
+To request a specific GPU type: `#SBATCH --gres=gpu:a40:1`
 
 ## Ravan Architecture
 
