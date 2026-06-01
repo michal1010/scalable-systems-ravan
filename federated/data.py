@@ -13,7 +13,7 @@ from transformers import DistilBertTokenizerFast
 
 MODEL_NAME = "distilbert-base-uncased"
 NUM_LABELS = 20
-MAX_LENGTH = 128
+MAX_LENGTH = 128  # default tokenization length
 
 
 # ---------------------------------------------------------------------------
@@ -27,13 +27,13 @@ def load_20newsgroups():
     return train, test
 
 
-def tokenize(texts, tokenizer):
+def tokenize(texts, tokenizer, max_length: int = MAX_LENGTH):
     """Tokenize a list of strings; return (input_ids, attention_mask) tensors."""
     enc = tokenizer(
         list(texts),
         padding="max_length",
         truncation=True,
-        max_length=MAX_LENGTH,
+        max_length=max_length,
         return_tensors="pt",
     )
     return enc["input_ids"], enc["attention_mask"]
@@ -97,8 +97,23 @@ def build_federated_loaders(
     batch_size: int,
     seed: int = 42,
     alpha: float = 0.3,
+    max_length: int = MAX_LENGTH,
+    cache_dir: str | None = None,
+    limit_examples: int | None = None,
+    limit_test_examples: int | None = None,
 ):
     """Build DataLoaders for all clients and a central test loader.
+
+    Args:
+        split_type          : "iid" or "noniid"
+        num_clients         : total number of FL clients
+        batch_size          : mini-batch size for each DataLoader
+        seed                : RNG seed for deterministic splits
+        alpha               : Dirichlet concentration for noniid split
+        max_length          : tokenizer max sequence length
+        cache_dir           : HuggingFace model/tokenizer cache directory
+        limit_examples      : if set, subsample train data (smoke tests only)
+        limit_test_examples : if set, subsample test data (smoke tests only)
 
     Returns:
         client_loaders : list of DataLoader, one per client
@@ -109,23 +124,42 @@ def build_federated_loaders(
     train_data, test_data = load_20newsgroups()
 
     print("Loading tokenizer...")
-    tokenizer = DistilBertTokenizerFast.from_pretrained(MODEL_NAME)
+    tokenizer = DistilBertTokenizerFast.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
 
-    print(f"Tokenizing {len(train_data.data)} train examples (max_length={MAX_LENGTH})...")
-    train_ids, train_mask = tokenize(train_data.data, tokenizer)
+    # Optional: subsample for quick smoke tests (never use in research runs)
+    train_texts = train_data.data
+    train_target = np.array(train_data.target)
+    if limit_examples is not None and limit_examples < len(train_texts):
+        rng_lim = np.random.default_rng(seed)
+        idx_lim = rng_lim.choice(len(train_texts), size=limit_examples, replace=False)
+        idx_lim.sort()
+        train_texts  = [train_texts[i] for i in idx_lim]
+        train_target = train_target[idx_lim]
+        print(f"  [smoke] limiting to {limit_examples} train examples")
 
-    print(f"Tokenizing {len(test_data.data)} test examples...")
-    test_ids, test_mask = tokenize(test_data.data, tokenizer)
+    print(f"Tokenizing {len(train_texts)} train examples (max_length={max_length})...")
+    train_ids, train_mask = tokenize(train_texts, tokenizer, max_length=max_length)
 
-    train_labels = np.array(train_data.target)
+    test_texts  = test_data.data
+    test_target = np.array(test_data.target)
+    if limit_test_examples is not None and limit_test_examples < len(test_texts):
+        rng_lim_t = np.random.default_rng(seed + 1)
+        idx_lim_t = rng_lim_t.choice(len(test_texts), size=limit_test_examples, replace=False)
+        idx_lim_t.sort()
+        test_texts  = [test_texts[i] for i in idx_lim_t]
+        test_target = test_target[idx_lim_t]
+        print(f"  [smoke] limiting test set to {limit_test_examples} examples")
+
+    print(f"Tokenizing {len(test_texts)} test examples...")
+    test_ids, test_mask = tokenize(test_texts, tokenizer, max_length=max_length)
 
     print(f"Creating {split_type.upper()} split — {num_clients} clients, seed={seed}" +
           (f", alpha={alpha}" if split_type == "noniid" else ""))
 
     if split_type == "iid":
-        splits = iid_split(len(train_labels), num_clients, seed)
+        splits = iid_split(len(train_target), num_clients, seed)
     elif split_type == "noniid":
-        splits = dirichlet_split(train_labels, num_clients, alpha, seed)
+        splits = dirichlet_split(train_target, num_clients, alpha, seed)
     else:
         raise ValueError(f"Unknown split type '{split_type}'. Use 'iid' or 'noniid'.")
 
@@ -134,7 +168,7 @@ def build_federated_loaders(
         ds = TensorDataset(
             train_ids[idx],
             train_mask[idx],
-            torch.tensor(train_labels[idx], dtype=torch.long),
+            torch.tensor(train_target[idx], dtype=torch.long),
         )
         loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
         client_loaders.append(loader)
@@ -148,9 +182,9 @@ def build_federated_loaders(
     test_ds = TensorDataset(
         test_ids,
         test_mask,
-        torch.tensor(test_data.target, dtype=torch.long),
+        torch.tensor(test_target, dtype=torch.long),
     )
     test_loader = DataLoader(test_ds, batch_size=batch_size)
-    print(f"Central test set: {len(test_data.target)} examples\n")
+    print(f"Central test set: {len(test_target)} examples\n")
 
     return client_loaders, test_loader, tokenizer

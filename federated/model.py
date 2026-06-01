@@ -26,20 +26,27 @@ NUM_LABELS = 20
 # Model factory
 # ---------------------------------------------------------------------------
 
-def make_distilbert() -> DistilBertForSequenceClassification:
-    """Load DistilBERT, freeze the backbone, keep the head trainable."""
+def make_distilbert(
+    train_head: bool = True,
+    cache_dir: str | None = None,
+) -> DistilBertForSequenceClassification:
+    """Load DistilBERT, freeze the backbone, optionally keep the head trainable.
+
+    Args:
+        train_head : if True (default), unfreeze pre_classifier + classifier.
+        cache_dir  : HuggingFace cache directory (passed to from_pretrained).
+    """
     model = DistilBertForSequenceClassification.from_pretrained(
-        MODEL_NAME, num_labels=NUM_LABELS
+        MODEL_NAME, num_labels=NUM_LABELS, cache_dir=cache_dir,
     )
-    # Freeze everything first
     for p in model.parameters():
         p.requires_grad_(False)
 
-    # Unfreeze classification head (randomly initialised for this task)
-    for p in model.pre_classifier.parameters():
-        p.requires_grad_(True)
-    for p in model.classifier.parameters():
-        p.requires_grad_(True)
+    if train_head:
+        for p in model.pre_classifier.parameters():
+            p.requires_grad_(True)
+        for p in model.classifier.parameters():
+            p.requires_grad_(True)
 
     return model
 
@@ -105,6 +112,47 @@ def count_params(model: nn.Module) -> tuple[int, int]:
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total     = sum(p.numel() for p in model.parameters())
     return trainable, total
+
+
+def count_params_detailed(model: nn.Module) -> dict:
+    """Return dict with adapter, head, and total trainable parameter counts."""
+    adapter_params = sum(
+        p.numel()
+        for layer in model.distilbert.transformer.layer
+        for m in [layer.attention.q_lin, layer.attention.v_lin]
+        if isinstance(m, (LoRALinear, RavanLinear))
+        for p in m.parameters()
+        if p.requires_grad
+    )
+    head_params = (
+        sum(p.numel() for p in model.pre_classifier.parameters() if p.requires_grad) +
+        sum(p.numel() for p in model.classifier.parameters() if p.requires_grad)
+    )
+    total_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return {
+        "trainable_adapter_params": adapter_params,
+        "trainable_head_params": head_params,
+        "total_trainable_params": total_trainable,
+    }
+
+
+def count_communicated_per_round(model: nn.Module) -> int:
+    """Return number of scalar parameters communicated per FL round.
+
+    FedIT: uploads lora_A + lora_B per adapted layer, plus head params.
+    Ravan: uploads s_i * H_i products per adapted layer (scales absorbed),
+           plus head params.
+    """
+    comm = 0
+    for layer in model.distilbert.transformer.layer:
+        for m in [layer.attention.q_lin, layer.attention.v_lin]:
+            if isinstance(m, LoRALinear):
+                comm += m.lora_A.numel() + m.lora_B.numel()
+            elif isinstance(m, RavanLinear):
+                comm += m.H.numel()  # [heads, rank, rank] — scales absorbed
+    comm += sum(p.numel() for p in model.pre_classifier.parameters() if p.requires_grad)
+    comm += sum(p.numel() for p in model.classifier.parameters() if p.requires_grad)
+    return comm
 
 
 def get_lora_layers(model: DistilBertForSequenceClassification):

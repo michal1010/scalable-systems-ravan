@@ -14,7 +14,6 @@ Anton & Jakomulski, Delft University of Technology, 2026.
 | **Ravan-SVD** | Ravan — trainable H, scales; B/A frozen | Federated LoRA warm-up + SVD *(data-aware)* | Average s·H products *(exact)* | s·H + head |
 
 All methods use the same frozen DistilBERT backbone and a shared trainable classification head (pre_classifier + classifier).
-
 Adapters are injected into the **query** and **value** projections of all 6 transformer layers (12 adapted layers total).
 
 ## Setup
@@ -59,57 +58,77 @@ python -m federated.train_ravan \
     --clients 20 --clients_per_round 3 --local_steps 50 \
     --heads 4 --rank 55 --lr 5e-4 \
     --warmup_clients 5 --warmup_steps 50
+
+# Save top singular values for spectral analysis:
+python -m federated.train_ravan --init svd ... --save_singular_values true
 ```
 
-### Quick smoke test
+### Smoke tests (2 rounds, 5 steps)
 
 ```bash
-python -m federated.train_fedit  --rounds 2 --local_steps 5 --split iid
-python -m federated.train_ravan  --init gram_schmidt --rounds 2 --local_steps 5 --split iid
-python -m federated.train_ravan  --init svd          --rounds 2 --local_steps 5 --split iid \
+python -m federated.train_fedit  --rounds 2 --local_steps 5 --split iid --seed 0
+python -m federated.train_ravan  --init gram_schmidt --rounds 2 --local_steps 5 --split iid --seed 0
+python -m federated.train_ravan  --init svd --rounds 2 --local_steps 5 --split iid --seed 0 \
     --warmup_steps 5 --warmup_clients 2
+
+# Or run all 6 smoke configurations at once:
+bash scripts/run_smoke_grid.sh
 ```
+
+### Full 18-job grid (local)
+
+```bash
+bash scripts/run_smoke_grid.sh          # smoke (6 tiny runs)
+# For full experiments, use the cluster sweep below
+```
+
+## Generating Paper Assets
+
+Each training run writes raw metrics (JSON, CSV) and a per-run learning curve to `results/`.
+After all runs finish, run the report-assets script to regenerate all paper-ready tables and figures:
+
+```bash
+python -m scripts.generate_report_assets --results_dir results --out_dir paper_assets
+```
+
+The script can also be run after each partial batch of runs — it gracefully skips missing method/split combinations.
+
+### Generated tables (`paper_assets/tables/`)
+
+| File | Contents |
+|---|---|
+| `main_results.csv` / `.tex` | Method × split accuracy table, mean±std across seeds, gap vs FedIT |
+| `gap_analysis.csv` | IID/Non-IID gaps relative to FedIT, SVD vs GS comparison |
+| `init_costs.csv` / `.tex` | Warm-up cost breakdown per method |
+| `setup_summary.csv` | Experiment hyper-parameters |
+| `parameter_budget.csv` | Adapter, head, and total trainable params per method |
+
+### Generated figures (`paper_assets/figures/`)
+
+| File | Shows |
+|---|---|
+| `learning_curves_iid.png` | Test accuracy vs round, mean±std across seeds (IID) |
+| `learning_curves_noniid.png` | Same for Non-IID split |
+| `final_accuracy_by_method_split.png` | Grouped bar chart: method × split, error bars = std |
+| `iid_vs_noniid_drop.png` | Per-method accuracy drop from IID to Non-IID |
+| `gap_analysis.png` | Ravan advantage over FedIT for IID and Non-IID |
+| `init_cost_vs_accuracy.png` | Initialization cost vs final Non-IID accuracy |
+| `singular_values.png` | Warm-up ΔW singular value spectra (only if `--save_singular_values true`) |
 
 ## Parameter Budget
 
-The default rank choices achieve approximate parameter budget matching between FedIT and Ravan. For DistilBERT attention projections (d = 768):
+Default rank choices achieve approximate budget matching. For DistilBERT (d = 768):
 
-$$r_\text{Ravan} \approx \sqrt{\frac{2 \cdot d \cdot r_\text{LoRA}}{h}} = \sqrt{\frac{2 \times 768 \times 8}{4}} \approx 55$$
+```
+r_Ravan ≈ sqrt(2 × d × r_LoRA / h) = sqrt(2 × 768 × 8 / 4) ≈ 55
+```
 
 | Method | Config | Adapter params (12 layers) | Head params | Total trainable |
 |---|---|---|---|---|
-| FedIT | rank=8 | 147,456 | ~606K | ~754K |
-| Ravan | heads=4, rank=55 | 145,248 | ~606K | ~751K |
+| FedIT | rank=8 | 147,456 | ~591K | ~738K |
+| Ravan | heads=4, rank=55 | 145,248 | ~591K | ~736K |
 
-Adapter params per layer: FedIT = 2 × d × r = 12,288; Ravan = h × r² + h ≈ 12,104.
-
-## Results and Visualizations
-
-Plots and data are written to `results/` automatically at the end of every run — no extra steps needed.
-
-```
-results/
-  fedit_noniid_seed0_<timestamp>_config.json    # full run config
-  fedit_noniid_seed0_<timestamp>_summary.json   # final + best accuracy
-  fedit_noniid_seed0_<timestamp>_rounds.csv     # per-round test_acc, time
-  fedit_noniid_seed0_<timestamp>_curve.png      # learning curve for this run
-  all_results.csv                               # one row per experiment (accumulates)
-  comparison_iid.png                            # } regenerated after every run
-  comparison_noniid.png                         # } once enough results exist
-  iid_vs_noniid.png                             # }
-  final_accuracy.png                            # }
-```
-
-### What each plot shows
-
-| Plot | Generated when | Answers |
-|---|---|---|
-| `<run>_curve.png` | Every run | Per-run convergence — sanity check |
-| `comparison_iid.png` / `comparison_noniid.png` | ≥2 methods have results | All methods on same axes, mean±std across seeds (RQ1 + RQ2) |
-| `iid_vs_noniid.png` | Both splits have results | Side-by-side IID vs Non-IID — shows whether Ravan's advantage widens under heterogeneity (key report figure) |
-| `final_accuracy.png` | ≥2 methods have results | Grouped bar chart per method × split, error bars = std across seeds |
-
-The comparison plots regenerate from scratch every time a run completes, accumulating results across jobs. If only one method or one split has finished so far, the plots that need both are simply skipped until the data exists.
+Per layer: FedIT = 2 × d × r = 12,288; Ravan = h × r² + h = 12,104.
 
 ## Correctness Tests
 
@@ -119,38 +138,21 @@ python -m pytest tests/ -v
 
 | Test | Checks |
 |---|---|
-| `test_ravan_exact_aggregation` | `mean_c [Σ_i B_i (s_c,i H_c,i) A_i] == Σ_i B_i [mean_c (s_c,i H_c,i)] A_i` |
-| `test_fedit_mismatch` | `mean(B_c @ A_c) ≠ mean(B_c) @ mean(A_c)` — verifies the known FedIT mismatch |
-| `test_gram_schmidt_orthogonality` | `B_i` columns and `A_i` rows are orthonormal across all heads |
+| `test_ravan_exact_aggregation` | `mean_c[Σ_i B_i(s H)_c,i A_i] == Σ_i B_i mean_c[(s H)_c,i] A_i` |
+| `test_fedit_mismatch` | `mean(B_c@A_c) ≠ mean(B_c)@mean(A_c)` — verifies the known FedIT mismatch |
+| `test_gram_schmidt_orthogonality` | B_i columns and A_i rows orthonormal across all heads |
 | `test_svd_init_orthogonality` | same check for SVD-initialized bases |
 | `test_ravan_zero_init_output` | adapter contributes zero at init (H=0) |
 | `test_lora_zero_init_output` | LoRA adapter contributes zero at init (B=0) |
+| `test_param_budget_counting` | FedIT rank=8 and Ravan h=4 r=55 adapter budgets agree within 5% |
+| `test_result_asset_generation_with_dummy_data` | generate_report_assets produces all expected tables and figures |
 
 ## Running on DAIC (TU Delft Cluster)
 
-The experiments are independent single-machine FL simulations — no multi-node distributed training needed. Submit one Slurm job per (method, split, seed) combination.
-
-### One-off job
+### Environment setup (once)
 
 ```bash
-sbatch jobs/submit_fedit.sh
-sbatch jobs/submit_ravan_gs.sh
-sbatch jobs/submit_ravan_svd.sh
-
-# Override defaults via extra args
-sbatch jobs/submit_fedit.sh --split iid --seed 2
-```
-
-### Full sweep (18 jobs)
-
-```bash
-bash jobs/sweep.sh
-```
-
-### Environment setup on DAIC
-
-```bash
-# Run once on a login node
+# On a login node
 module use /opt/insy/modulefiles
 module load miniconda
 conda create -n ravan python=3.10
@@ -158,7 +160,33 @@ conda activate ravan
 pip install -r requirements.txt
 ```
 
-### Cluster specs
+### Submit individual jobs
+
+```bash
+sbatch jobs/submit_fedit.sh
+sbatch jobs/submit_ravan_gs.sh
+sbatch jobs/submit_ravan_svd.sh
+
+# Override defaults
+sbatch jobs/submit_fedit.sh --split iid --seed 2
+sbatch jobs/submit_ravan_svd.sh --split noniid --seed 1
+```
+
+### Full sweep — 18 jobs (3 methods × 2 splits × 3 seeds)
+
+```bash
+bash jobs/sweep.sh
+```
+
+### Monitoring
+
+```bash
+squeue -u $USER                  # job status
+seff <jobID>                     # efficiency after completion
+tail -f logs/fedit_<jobID>.out   # live output
+```
+
+### Cluster specs (DAIC general partition)
 
 | GPU | Count | VRAM |
 |---|---|---|
@@ -167,75 +195,79 @@ pip install -r requirements.txt
 | V100 | 11 | 32 GB |
 | RTX 2080 Ti | 24 | 11 GB |
 
-Request a specific GPU: `#SBATCH --gres=gpu:a40:1`
+Partition `general`, QoS `short` (max 4 hours per job).
+Request specific GPU: `#SBATCH --gres=gpu:a40:1`
 
-### Monitoring
+### After sweep: generate paper assets on the cluster
 
 ```bash
-squeue -u $USER          # check job status
-seff <jobID>             # efficiency report after job finishes
-tail -f logs/fedit_*.out # live log output
+# On a login node after all jobs complete:
+python -m scripts.generate_report_assets --results_dir results --out_dir paper_assets
+# Then download paper_assets/ to your local machine
 ```
 
-## Ravan Architecture (Summary)
+## Ravan Architecture
 
-`RavanLinear` wraps a **frozen** `nn.Linear` and adds multi-head adapter:
+`RavanLinear` wraps a **frozen** `nn.Linear` and adds multi-head adapters:
 
 ```
 output = W·x  +  Σ_h  scales[h] × B[h] @ H[h] @ A[h] @ x
-                  \_________________________/
-                    adapter contribution
-                    (zero at init since H=0)
 ```
 
 - `B[h]` ∈ ℝ^{d_out × r}, `A[h]` ∈ ℝ^{r × d_in} — **frozen** after initialization
 - `H[h]` ∈ ℝ^{r × r} — **trainable**, zero-initialized
 - `scales[h]` ∈ ℝ — **trainable**, initialized to 1
 
-Clients upload `{scales[h] × H[h]}` products; the server averages them exactly.
+Clients upload `{scales[h] × H[h]}` products; server averages exactly.
 
-## Federated SVD Warm-Up
-
-Before main Ravan training, `--init svd` runs:
+## Federated SVD Warm-Up (`--init svd`)
 
 1. Sample `warmup_clients` (default 5) clients
-2. Each trains a temporary LoRA model (rank R = heads × rank)
+2. Each trains a temporary LoRA model (rank R = heads × rank = 220)
 3. Each client computes `ΔW_c = B_c @ A_c` per layer *(products, not factors)*
 4. Server averages: `ΔW_warm = mean_c(ΔW_c)` — avoids FedIT mismatch
 5. Truncated SVD: `ΔW_warm ≈ U_R Σ_R Vh_R`
 6. Frozen bases: `B_i = U_R[:, slice_i]`, `A_i = Vh_R[slice_i, :]`
+   (singular values not absorbed)
 7. Main Ravan training starts with `H_i = 0`, `scales_i = 1`
 
-Raw client data never leaves the client. Extra initialization cost is reported separately in the results.
+Raw client data never leaves the client.  All warm-up costs are recorded in `summary.json`.
 
 ## Module Reference
 
 ```
 federated/
-  data.py          # 20 Newsgroups loading, IID and Dirichlet non-IID splits
-  model.py         # DistilBERT factory, inject_lora, inject_ravan, param counting
-  lora.py          # LoRALinear (FedIT adapter)
-  ravan.py         # RavanLinear + gram_schmidt_init + svd_init
-  client.py        # local_train(), evaluate()
-  server.py        # fedit_* and ravan_* aggregation helpers
-  warmup.py        # federated_svd_init()
-  train_fedit.py   # FedIT training script (run with python -m federated.train_fedit)
-  train_ravan.py   # Ravan training script (run with python -m federated.train_ravan)
-  utils.py         # Result logging
+  data.py          load_20newsgroups; IID and Dirichlet non-IID splits
+  model.py         make_distilbert, inject_lora, inject_ravan, param counting
+  lora.py          LoRALinear (FedIT adapter)
+  ravan.py         RavanLinear + gram_schmidt_init + svd_init
+  client.py        local_train(), evaluate()
+  server.py        fedit_* and ravan_* aggregation helpers
+  warmup.py        federated_svd_init() with timing and cost logging
+  train_fedit.py   FedIT training script
+  train_ravan.py   Ravan training script (both init modes)
+  utils.py         Result logging, git hash, run naming
+  plot.py          Per-run and comparison figures (called from training scripts)
+
+scripts/
+  generate_report_assets.py   Paper-ready tables + figures from all results
+  run_smoke_grid.sh            Quick smoke test: all 3 methods, 2 splits
 
 jobs/
-  submit_fedit.sh     # Slurm job script for FedIT
-  submit_ravan_gs.sh  # Slurm job script for Ravan (Gram-Schmidt)
-  submit_ravan_svd.sh # Slurm job script for Ravan (SVD)
-  sweep.sh            # Submit full experiment grid
+  submit_fedit.sh              Slurm job: FedIT
+  submit_ravan_gs.sh           Slurm job: Ravan-GS
+  submit_ravan_svd.sh          Slurm job: Ravan-SVD
+  sweep.sh                     Submit full 18-job grid
 
 tests/
-  test_aggregation.py  # Correctness tests (pytest)
+  test_aggregation.py          8 correctness tests (pytest)
 
-results/              # Experiment outputs (auto-created)
-logs/                 # Slurm stdout/stderr (auto-created by job scripts)
+results/                       Experiment outputs (auto-created)
+paper_assets/                  Generated tables and figures (from script)
+logs/                          Slurm stdout/stderr (auto-created by job scripts)
 ```
 
 ## Legacy Scripts
 
-The root-level `bert_20newsgroups.py`, `bert_20newsgroups_ravan.py`, and `federated_bert/` directory contain earlier prototypes (tiny BERT, Flower-based FL). They are kept for reference but are **not** part of the current research pipeline.
+`bert_20newsgroups.py`, `bert_20newsgroups_ravan.py`, and `federated_bert/` are earlier
+prototypes (tiny BERT, Flower-based FL). They are **not** part of the current research pipeline.
