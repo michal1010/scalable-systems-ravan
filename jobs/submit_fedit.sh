@@ -2,13 +2,14 @@
 #
 # FedIT job — DAIC cluster (Slurm)
 #
-# Submit a single FedIT run:
-#   sbatch jobs/submit_fedit.sh --split noniid --seed 0
+# Prerequisites (run once from login node):
+#   mkdir -p logs           # Slurm writes the log BEFORE the script runs
 #
-# To sweep seeds / splits, loop externally:
-#   for seed in 0 1 2; do for split in iid noniid; do
-#       sbatch jobs/submit_fedit.sh --split $split --seed $seed
-#   done; done
+# Submit a single run (from project root on the cluster):
+#   sbatch jobs/submit_fedit.sh
+#   sbatch jobs/submit_fedit.sh --split iid --seed 1
+#
+# The full 18-job sweep is driven by jobs/sweep.sh
 #
 #SBATCH --job-name=fedit
 #SBATCH --partition=general
@@ -21,18 +22,21 @@
 #SBATCH --output=logs/fedit_%j.out
 #SBATCH --error=logs/fedit_%j.err
 
-# ── working directory ────────────────────────────────────────────────────────
-# Always run from the project root (wherever sbatch was called from)
+# ── working directory ─────────────────────────────────────────────────────────
+# $SLURM_SUBMIT_DIR is the directory where sbatch was called from.
+# Always submit from the project root on project storage, e.g.:
+#   /tudelft.net/staff-umbrella/<project>/scalable-systems-ravan/
 cd $SLURM_SUBMIT_DIR
 
-# ── environment ──────────────────────────────────────────────────────────────
+# ── environment ───────────────────────────────────────────────────────────────
 module use /opt/insy/modulefiles
 module load miniconda
-conda activate ravan          # change to your env name
+conda activate ravan
 
-export HF_HOME=$HOME/.cache/huggingface
+# Use project storage for HuggingFace cache to avoid filling home quota
+export HF_HOME=/tudelft.net/staff-umbrella/<project>/.cache/huggingface
 
-# ── run ──────────────────────────────────────────────────────────────────────
+# ── run ───────────────────────────────────────────────────────────────────────
 mkdir -p results
 
 srun python -m federated.train_fedit \
@@ -46,4 +50,4 @@ srun python -m federated.train_fedit \
     --lr 1e-3 \
     --batch_size 16 \
     "$@"
-#             ^^^ extra CLI args forwarded from sbatch arguments
+#             ^^^ extra CLI args forwarded when calling sbatch ... --split iid --seed 2

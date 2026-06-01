@@ -2,6 +2,9 @@
 #
 # Ravan (Gram-Schmidt init) job — DAIC cluster (Slurm)
 #
+# Prerequisites (run once from login node):
+#   mkdir -p logs
+#
 # Usage:
 #   sbatch jobs/submit_ravan_gs.sh
 #   sbatch jobs/submit_ravan_gs.sh --split iid --seed 1
@@ -23,7 +26,7 @@ module use /opt/insy/modulefiles
 module load miniconda
 conda activate ravan
 
-export HF_HOME=$HOME/.cache/huggingface
+export HF_HOME=/tudelft.net/staff-umbrella/<project>/.cache/huggingface
 
 mkdir -p results
 
