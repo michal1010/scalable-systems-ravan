@@ -76,7 +76,8 @@ def run(args):
     print_param_summary(model)
 
     param_detail = count_params_detailed(model)
-    comm_per_round = count_communicated_per_round(model)
+    comm_per_client = count_communicated_per_round(model)
+    comm_per_round = comm_per_client * args.clients_per_round
     total_main_comm = comm_per_round * args.rounds
 
     print(f"  Communicated / round : {comm_per_round:,}")
