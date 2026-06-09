@@ -24,10 +24,10 @@ serverapp = "server_app:app"
 clientapp = "client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 5
+num-server-rounds = 2
 min-available-clients = 3
 local-epochs = 1
-batch-size = 8
+batch-size = 2
 learning-rate = 0.00002
 
 [tool.flwr.federations]
@@ -39,7 +39,3 @@ options.num-supernodes = 3
 [tool.flwr.federations.supergrid-deployment]
 address = "supergrid.flower.ai"
 enable-account-auth = true
-
-[tool.flwr.federations.local-simulation.options.backend.client-resources]
-num-cpus = 8
-num-gpus = 0.0
