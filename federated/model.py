@@ -155,6 +155,18 @@ def count_communicated_per_round(model: nn.Module) -> int:
     return comm
 
 
+def count_adapter_communicated(model: nn.Module) -> int:
+    """Return adapter-only parameters communicated per client per round (head excluded)."""
+    comm = 0
+    for layer in model.distilbert.transformer.layer:
+        for m in [layer.attention.q_lin, layer.attention.v_lin]:
+            if isinstance(m, LoRALinear):
+                comm += m.lora_A.numel() + m.lora_B.numel()
+            elif isinstance(m, RavanLinear):
+                comm += m.H.numel()
+    return comm
+
+
 def get_lora_layers(model: DistilBertForSequenceClassification):
     """Yield every LoRALinear in the model."""
     for layer in model.distilbert.transformer.layer:

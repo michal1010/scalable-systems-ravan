@@ -26,6 +26,7 @@ import torch
 from .client import local_train, evaluate
 from .data import build_federated_loaders
 from .model import (
+    count_adapter_communicated,
     count_params_detailed,
     count_communicated_per_round,
     inject_lora,
@@ -79,6 +80,7 @@ def run(args):
     comm_per_client = count_communicated_per_round(model)
     comm_per_round = comm_per_client * args.clients_per_round
     total_main_comm = comm_per_round * args.rounds
+    adapter_comm_per_client = count_adapter_communicated(model)
 
     print(f"  Communicated / round : {comm_per_round:,}")
     print(f"  NOTE: FedIT aggregation is INEXACT — averaging A and B separately")
@@ -146,6 +148,14 @@ def run(args):
         **param_detail,
         "communicated_params_per_round": comm_per_round,
         "device": str(device),
+        "optimizer": "AdamW",
+        "weight_decay": 0.01,
+        "loss": "CrossEntropyLoss",
+        "newsgroups_remove": "headers,footers,quotes",
+        "lora_scaling": 1.0,
+        "train_head": train_head,
+        "adapter_targets": ["q_lin", "v_lin"],
+        "adapted_matrices": 12,
     })
     save_config(cfg, run_dir)
 
@@ -172,6 +182,7 @@ def run(args):
         "final_loss":                  None,
         **param_detail,
         "communicated_params_per_round": comm_per_round,
+        "communicated_adapter_params_per_client": adapter_comm_per_client,
         "total_main_communication_params": total_main_comm,
         "warmup_clients":              None,
         "warmup_steps":                None,

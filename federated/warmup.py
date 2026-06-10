@@ -4,17 +4,20 @@ Algorithm (Section 3.3 of the report):
   1. Select a subset of clients for the warm-up phase.
   2. Each client trains a temporary LoRA model of total rank R = heads * rank
      for warmup_steps gradient steps.
-  3. Each client computes its update product  ΔW_c = B_c @ A_c  per layer.
-     The server aggregates PRODUCTS, not factors — avoiding FedIT mismatch.
-  4. Server averages: ΔW_warm = mean_c(ΔW_c) per layer (or weighted by examples).
-  5. Server runs truncated SVD on each ΔW_warm:
+  3. Each client uploads the temporary LoRA FACTORS B_c [d_out×R] and A_c [R×d_in]
+     per adapted layer (not the full product ΔW_c).
+     Communication cost per layer per client: R*(d_out + d_in).
+  4. Server reconstructs ΔW_c = B_c @ A_c internally for each client, then
+     aggregates PRODUCTS — avoiding FedIT factor-averaging mismatch.
+  5. Server averages: ΔW_warm = mean_c(ΔW_c) per layer (or weighted by examples).
+  6. Server runs truncated SVD on each ΔW_warm:
          ΔW_warm ≈ U_R  Σ_R  Vh_R
-  6. Singular vectors (not singular values) initialize Ravan's frozen bases:
+  7. Singular vectors (not singular values) initialize Ravan's frozen bases:
          B_i = U_R[:, (i-1)*r : i*r],   A_i = Vh_R[(i-1)*r : i*r, :]
      H_i = 0 and s_i = 1 so the adapter starts at zero.
 
-Raw client data stays local; only temporary LoRA update products ΔW_c are
-communicated, not raw examples.
+Raw client data stays local; clients upload only temporary LoRA factors B_c, A_c.
+The warm-up model (LoRA state + head) is fully discarded after init.
 """
 
 import csv
@@ -97,18 +100,22 @@ def federated_svd_init(
         w = float(len(client_loaders[cid].dataset)) if warmup_weighting == "examples" else 1.0
         weights.append(w)
 
+        # Client uploads factors B_c and A_c per layer (not the full product ΔW_c).
+        # Server reconstructs ΔW_c = B_c @ A_c internally before aggregating.
         layers = list(get_lora_layers(warmup_model))
-        delta_Ws: list[torch.Tensor] = []
+        client_factors: list[tuple[torch.Tensor, torch.Tensor]] = []
         for ll in layers:
             with torch.no_grad():
-                dW = (ll.lora_B @ ll.lora_A).cpu()
-            delta_Ws.append(dW)
+                B_c = ll.lora_B.detach().cpu().clone()   # [d_out, R]
+                A_c = ll.lora_A.detach().cpu().clone()   # [R, d_in]
+            client_factors.append((B_c, A_c))
 
+        # Server-side: reconstruct ΔW_c = B_c @ A_c, then accumulate weighted sum.
         if delta_W_sum is None:
-            delta_W_sum = [w * dW.clone() for dW in delta_Ws]
+            delta_W_sum = [w * (B_c @ A_c) for (B_c, A_c) in client_factors]
         else:
-            for i, dW in enumerate(delta_Ws):
-                delta_W_sum[i] = delta_W_sum[i] + w * dW
+            for i, (B_c, A_c) in enumerate(client_factors):
+                delta_W_sum[i] = delta_W_sum[i] + w * (B_c @ A_c)
 
         del warmup_model
         if device.type == "cuda":
@@ -120,9 +127,12 @@ def federated_svd_init(
     total_weight = sum(weights)
     delta_W_avg = [dW / total_weight for dW in delta_W_sum]
 
-    # Warm-up communicated params: each client uploads one ΔW per adapted layer
-    warmup_comm_per_client = sum(dW.numel() for dW in delta_W_avg)
-    warmup_communicated_params = warmup_comm_per_client * len(selected)
+    # Communication cost: count actual uploaded factors B_c and A_c.
+    # client_factors from the last client has the same shapes as all others.
+    warmup_factor_comm_per_client = sum(
+        B_c.numel() + A_c.numel() for (B_c, A_c) in client_factors
+    )
+    warmup_communicated_params = warmup_factor_comm_per_client * len(selected)
 
     t_svd_start = time.time()
     svd_results: list[tuple[torch.Tensor, torch.Tensor]] = []
@@ -155,6 +165,7 @@ def federated_svd_init(
         "warmup_weighting":          warmup_weighting,
         "warmup_trainable_params":   warmup_trainable_params,
         "warmup_communicated_params": warmup_communicated_params,
+        "warmup_upload_mode":        "lora_factors",
         "warmup_train_runtime_s":    round(train_runtime_s, 2),
         "warmup_svd_runtime_s":      round(svd_runtime_s, 4),
         "warmup_total_runtime_s":    round(total_runtime_s, 2),

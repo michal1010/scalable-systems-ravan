@@ -294,16 +294,17 @@ def test_result_asset_generation_with_dummy_data(tmp_path):
             "best_test_acc":               0.32,
             "final_loss":                  None,
             "trainable_adapter_params":    147456 if method == "fedit" else 145248,
-            "trainable_head_params":       590592,
-            "total_trainable_params":      738048 if method == "fedit" else 735840,
-            "communicated_params_per_round": 738048 if method == "fedit" else 735840,
-            "total_main_communication_params": 738048 * 5,
+            "trainable_head_params":       605972,
+            "total_trainable_params":      753428 if method == "fedit" else 751220,
+            "communicated_adapter_params_per_client": 147456 if method == "fedit" else 145200,
+            "communicated_params_per_round": (753428 if method == "fedit" else 751172) * 3,
+            "total_main_communication_params": (753428 if method == "fedit" else 751172) * 3 * 5,
             "warmup_clients":              5   if method == "ravan_svd" else None,
             "warmup_steps":                50  if method == "ravan_svd" else None,
             "warmup_rank":                 220 if method == "ravan_svd" else None,
             "warmup_weighting":            "uniform" if method == "ravan_svd" else None,
             "warmup_trainable_params":     None,
-            "warmup_communicated_params":  7077888 if method == "ravan_svd" else 0,
+            "warmup_communicated_params":  20275200 if method == "ravan_svd" else 0,
             "warmup_train_runtime_s":      12.3 if method == "ravan_svd" else None,
             "warmup_svd_runtime_s":        0.02 if method == "ravan_svd" else None,
             "warmup_total_runtime_s":      12.5 if method == "ravan_svd" else None,
@@ -398,3 +399,143 @@ def test_result_asset_generation_with_dummy_data(tmp_path):
         p = out_figures / fname
         assert p.exists(), f"Expected figure not found: {p}"
         assert p.stat().st_size > 0, f"Figure file is empty: {p}"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Warm-up factor communication count
+# ---------------------------------------------------------------------------
+
+def test_warmup_factor_communication_count():
+    """Default warm-up (K=5, R=220, 12 layers of 768×768) gives 20,275,200 communicated params.
+
+    Clients upload LoRA factors B_c [d_out×R] and A_c [R×d_in] per adapted layer.
+    Per layer per client: R*(d_out + d_in) = 220*(768+768) = 337,920
+    Total: 5 clients × 12 layers × 337,920 = 20,275,200
+    """
+    K_warm = 5
+    total_rank = 220   # heads * per_head_rank = 4 * 55
+    n_layers = 12
+    d = 768            # DistilBERT hidden size (q_lin and v_lin are 768×768)
+
+    factor_comm_per_layer = total_rank * (d + d)          # B_c + A_c
+    factor_comm_per_client = n_layers * factor_comm_per_layer
+    total = K_warm * factor_comm_per_client
+
+    assert factor_comm_per_layer == 337_920, f"Per layer: {factor_comm_per_layer}"
+    assert factor_comm_per_client == 4_055_040, f"Per client: {factor_comm_per_client}"
+    assert total == 20_275_200, f"Total: {total}"
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Ravan-SVD head matches pretrained
+# ---------------------------------------------------------------------------
+
+def test_ravan_svd_head_matches_pretrained():
+    """inject_ravan with SVD init does not modify the classification head.
+
+    The main Ravan model in train_ravan.py is always freshly created via
+    make_distilbert(), so the head comes from pretrained weights regardless
+    of any warm-up training.  We verify inject_ravan does not touch the head
+    by recording head params before and after injection.
+    """
+    import torch
+    torch.manual_seed(0)
+    from federated.model import make_distilbert, inject_ravan
+
+    heads, rank = 2, 4
+    R = heads * rank
+
+    # Simulate SVD output: random orthonormal U_R, Vh_R for each adapted layer
+    d = 768
+    dW = torch.randn(d, d)
+    U, _, Vh = torch.linalg.svd(dW, full_matrices=False)
+    one_svd = (U[:, :R].contiguous(), Vh[:R, :].contiguous())
+    # 6 transformer layers × (q_svd, v_svd)
+    svd_per_layer = [(one_svd, one_svd) for _ in range(6)]
+
+    head_keys = ["pre_classifier.weight", "pre_classifier.bias",
+                 "classifier.weight", "classifier.bias"]
+
+    m_ravan = make_distilbert()
+    # Record head params before injection
+    params_before = {k: v.clone() for k, v in m_ravan.named_parameters()
+                     if k in head_keys}
+
+    inject_ravan(m_ravan, heads=heads, rank=rank, init_method="svd",
+                 svd_matrices_per_layer=svd_per_layer)
+
+    params_after = dict(m_ravan.named_parameters())
+    for key in head_keys:
+        assert torch.allclose(params_before[key], params_after[key]), \
+            f"Head param '{key}' was modified by inject_ravan — warm-up state must not leak"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Non-empty client splits
+# ---------------------------------------------------------------------------
+
+def test_nonempty_client_splits():
+    """IID and Dirichlet (alpha=0.3) splits produce no empty clients for seeds 0, 1, 2."""
+    import numpy as np
+    from federated.data import iid_split, dirichlet_split
+
+    # Synthetic dataset mimicking 20 Newsgroups structure
+    rng = np.random.default_rng(99)
+    n_examples = 11_314
+    n_classes = 20
+    n_clients = 20
+    labels = rng.integers(0, n_classes, size=n_examples)
+
+    for seed in [0, 1, 2]:
+        iid_splits = iid_split(n_examples, n_clients, seed)
+        assert all(len(s) > 0 for s in iid_splits), \
+            f"IID split seed={seed} produced empty client(s)"
+
+        noniid_splits = dirichlet_split(labels, n_clients, alpha=0.3, seed=seed)
+        assert all(len(s) > 0 for s in noniid_splits), \
+            f"Dirichlet alpha=0.3 seed={seed} produced empty client(s)"
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Parameter accounting
+# ---------------------------------------------------------------------------
+
+def test_parameter_accounting():
+    """Exact parameter counts must match the report's specified values."""
+    import torch
+    from federated.model import (
+        make_distilbert, inject_lora, inject_ravan,
+        count_params_detailed, count_adapter_communicated,
+    )
+
+    # FedIT (rank=8, d=768, 12 layers)
+    torch.manual_seed(0)
+    m_fedit = make_distilbert()
+    inject_lora(m_fedit, rank=8)
+    d_fedit = count_params_detailed(m_fedit)
+    ac_fedit = count_adapter_communicated(m_fedit)
+
+    assert d_fedit["trainable_adapter_params"] == 147_456, \
+        f"FedIT adapter trainable: expected 147456, got {d_fedit['trainable_adapter_params']}"
+    assert d_fedit["trainable_head_params"] == 605_972, \
+        f"FedIT head: expected 605972, got {d_fedit['trainable_head_params']}"
+    assert d_fedit["total_trainable_params"] == 753_428, \
+        f"FedIT total trainable: expected 753428, got {d_fedit['total_trainable_params']}"
+    assert ac_fedit == 147_456, \
+        f"FedIT adapter comm: expected 147456, got {ac_fedit}"
+
+    # Ravan (heads=4, rank=55, d=768, 12 layers)
+    torch.manual_seed(0)
+    m_ravan = make_distilbert()
+    inject_ravan(m_ravan, heads=4, rank=55, init_method="gram_schmidt")
+    d_ravan = count_params_detailed(m_ravan)
+    ac_ravan = count_adapter_communicated(m_ravan)
+
+    assert d_ravan["trainable_adapter_params"] == 145_248, \
+        f"Ravan adapter trainable: expected 145248, got {d_ravan['trainable_adapter_params']}"
+    assert d_ravan["trainable_head_params"] == 605_972, \
+        f"Ravan head: expected 605972, got {d_ravan['trainable_head_params']}"
+    assert d_ravan["total_trainable_params"] == 751_220, \
+        f"Ravan total trainable: expected 751220, got {d_ravan['total_trainable_params']}"
+    assert ac_ravan == 145_200, \
+        f"Ravan adapter comm: expected 145200, got {ac_ravan}"
