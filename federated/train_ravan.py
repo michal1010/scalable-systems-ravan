@@ -38,6 +38,7 @@ import torch
 from .client import evaluate, local_train
 from .data import build_federated_loaders
 from .model import (
+    count_adapter_communicated,
     count_communicated_per_round,
     count_params_detailed,
     inject_ravan,
@@ -147,6 +148,7 @@ def run(args):
     comm_per_client = count_communicated_per_round(model)
     comm_per_round = comm_per_client * args.clients_per_round
     total_main_comm = comm_per_round * args.rounds
+    adapter_comm_per_client = count_adapter_communicated(model)
 
     print(f"  Communicated / round : {comm_per_round:,}")
     print(f"  NOTE: Ravan aggregation is EXACT — averaging s*H products.\n")
@@ -164,8 +166,6 @@ def run(args):
 
     for rnd in range(1, args.rounds + 1):
         t_round_start = time.time()
-
-        ravan_load_global(model, global_upload)
 
         selected = rng.choice(args.clients, size=args.clients_per_round, replace=False).tolist()
         client_uploads = []
@@ -213,6 +213,17 @@ def run(args):
         "communicated_params_per_round": comm_per_round,
         "device": str(device),
         **warmup_costs,
+        "optimizer": "AdamW",
+        "weight_decay": 0.01,
+        "loss": "CrossEntropyLoss",
+        "newsgroups_remove": "headers,footers,quotes",
+        "lora_scaling": 1.0,
+        "train_head": train_head,
+        "adapter_targets": ["q_lin", "v_lin"],
+        "adapted_matrices": 12,
+        "warmup_upload": "lora_factors" if args.init == "svd" else None,
+        "warmup_aggregation": "product_after_reconstruction" if args.init == "svd" else None,
+        "svd_absorb_singular_values": False if args.init == "svd" else None,
     })
     save_config(cfg, run_dir)
 
@@ -239,6 +250,7 @@ def run(args):
         "final_loss":                  None,
         **param_detail,
         "communicated_params_per_round": comm_per_round,
+        "communicated_adapter_params_per_client": adapter_comm_per_client,
         "total_main_communication_params": total_main_comm,
         **warmup_costs,
         "total_runtime_s":             round(time.time() - t_run_start, 1),
