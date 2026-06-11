@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # FedIT job — DAIC cluster (Slurm)
 #
@@ -26,20 +26,10 @@
 # $SLURM_SUBMIT_DIR is the directory where sbatch was called from.
 # Always submit from the project root on project storage, e.g.:
 #   /tudelft.net/staff-umbrella/<project>/scalable-systems-ravan/
-cd $SLURM_SUBMIT_DIR
-
-# ── environment ───────────────────────────────────────────────────────────────
-module use /opt/insy/modulefiles
-module load miniconda
-conda activate ravan
-
-# Use project storage for HuggingFace cache to avoid filling home quota
-export HF_HOME=/tudelft.net/staff-umbrella/<project>/.cache/huggingface
+source "${SLURM_SUBMIT_DIR}/jobs/container/container_env.sh"
 
 # ── run ───────────────────────────────────────────────────────────────────────
-mkdir -p results
-
-srun python -m federated.train_fedit \
+run_in_container python -m federated.train_fedit \
     --split noniid \
     --seed 0 \
     --rounds 50 \
