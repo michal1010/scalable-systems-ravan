@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Ravan (Gram-Schmidt init) job — DAIC cluster (Slurm)
 #
@@ -20,17 +20,9 @@
 #SBATCH --output=logs/ravan_gs_%j.out
 #SBATCH --error=logs/ravan_gs_%j.err
 
-cd $SLURM_SUBMIT_DIR
+source "${SLURM_SUBMIT_DIR}/jobs/container/container_env.sh"
 
-module use /opt/insy/modulefiles
-module load miniconda
-conda activate ravan
-
-export HF_HOME=/tudelft.net/staff-umbrella/<project>/.cache/huggingface
-
-mkdir -p results
-
-srun python -m federated.train_ravan \
+run_in_container python -m federated.train_ravan \
     --init gram_schmidt \
     --split noniid \
     --seed 0 \
