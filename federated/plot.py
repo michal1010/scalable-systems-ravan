@@ -43,17 +43,26 @@ RESULTS_DIR = Path(__file__).parent.parent / "results"
 
 # ── visual identity ────────────────────────────────────────────────────────────
 
-METHOD_ORDER = ["fedit", "ravan_gram_schmidt", "ravan_svd"]
+METHOD_ORDER = [
+    "fedit", "ravan_gram_schmidt", "ravan_svd",
+    "t5_fedit", "t5_ravan_gram_schmidt", "t5_ravan_svd",
+]
 
 METHOD_LABELS = {
-    "fedit":             "FedIT",
-    "ravan_gram_schmidt": "Ravan-GS",
-    "ravan_svd":          "Ravan-SVD",
+    "fedit":                  "FedIT",
+    "ravan_gram_schmidt":     "Ravan-GS",
+    "ravan_svd":              "Ravan-SVD",
+    "t5_fedit":               "T5-FedIT",
+    "t5_ravan_gram_schmidt":  "T5-Ravan-GS",
+    "t5_ravan_svd":           "T5-Ravan-SVD",
 }
 METHOD_COLORS = {
-    "fedit":             "#e74c3c",   # red
-    "ravan_gram_schmidt": "#27ae60",  # green
-    "ravan_svd":          "#2980b9",  # blue
+    "fedit":                  "#e74c3c",   # red
+    "ravan_gram_schmidt":     "#27ae60",   # green
+    "ravan_svd":              "#2980b9",   # blue
+    "t5_fedit":               "#c0392b",   # dark red
+    "t5_ravan_gram_schmidt":  "#1e8449",   # dark green
+    "t5_ravan_svd":           "#1a5276",   # dark blue
 }
 SPLIT_LABELS  = {"iid": "I.I.D.", "noniid": "Non-I.I.D."}
 SPLIT_HATCHES = {"iid": "",        "noniid": "///"}
@@ -156,8 +165,8 @@ def _draw_method_curves(
         if result is None:
             continue
         rounds, mean, std = result
-        color  = METHOD_COLORS[method]
-        label  = METHOD_LABELS[method]
+        color  = METHOD_COLORS.get(method, "#888888")
+        label  = METHOD_LABELS.get(method, method)
         n_seeds = int(((summaries["method"] == method) & (summaries["split"] == split)).sum())
 
         ax.plot(rounds, mean, label=label, color=color)
@@ -347,7 +356,7 @@ def _plot_final_accuracy_bar(
                 )
 
     ax.set_xticks(x)
-    ax.set_xticklabels([METHOD_LABELS[m] for m in present_methods])
+    ax.set_xticklabels([METHOD_LABELS.get(m, m) for m in present_methods])
     ax.set_ylabel("Final Test Accuracy")
     ax.set_title("Final Test Accuracy by Method and Data Split\n"
                  "(error bars = std across seeds; see iid_vs_noniid.png for learning curves)")
