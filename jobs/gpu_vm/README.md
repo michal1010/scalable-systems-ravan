@@ -31,9 +31,9 @@ Run the one-seed T5-Base setup:
 bash jobs/gpu_vm/sweep_t5_minimal.sh
 ```
 
-This runs four experiments:
+This runs six experiments:
 
-- T5-FedIT and T5-Ravan-GS
+- T5-FedIT, T5-Ravan-GS, and T5-Ravan-SVD
 - `iid` and `noniid`
 - seed `0`
 
@@ -47,6 +47,7 @@ Default T5 settings:
 - non-IID alpha: `0.3`
 - FedIT rank: `32`
 - Ravan heads/rank: `4 x 110`
+- Ravan-SVD warm-up clients/steps: `5 x 50`
 - mixed precision and gradient checkpointing: enabled
 - batch: `16`, gradient accumulation: `2` for effective batch size `32`
 

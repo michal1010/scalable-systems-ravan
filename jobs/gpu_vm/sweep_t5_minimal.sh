@@ -25,7 +25,7 @@ echo "Results     : $SWEEP_DIR"
 echo "Logs        : $SWEEP_LOG_DIR"
 echo "Seeds       : $SEEDS"
 echo "Splits      : $SPLITS"
-echo "Methods     : FedIT, Ravan-GS"
+echo "Methods     : FedIT, Ravan-GS, Ravan-SVD"
 echo "Parallelism : $MAX_PARALLEL"
 echo "Batch       : ${T5_BATCH_SIZE:-16} x grad_accum ${T5_GRAD_ACCUM_STEPS:-2}"
 echo ""
@@ -74,6 +74,13 @@ for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "t5_ravan_gs_${split}_seed${seed}" \
             "${GPU_VM_DIR}/run_t5_ravan_gs.sh" --split "$split" --seed "$seed" "$@"
+    done
+done
+
+for split in $SPLITS; do
+    for seed in $SEEDS; do
+        launch_job "t5_ravan_svd_${split}_seed${seed}" \
+            "${GPU_VM_DIR}/run_t5_ravan_svd.sh" --split "$split" --seed "$seed" "$@"
     done
 done
 
