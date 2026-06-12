@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+GPU_VM_DIR="${GPU_VM_DIR:-${A100_VM_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 
 SEEDS="${SEEDS:-0}"
 SPLITS="${SPLITS:-iid noniid}"

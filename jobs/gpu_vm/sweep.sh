@@ -2,6 +2,7 @@
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+GPU_VM_DIR="${GPU_VM_DIR:-${A100_VM_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 
 SEEDS="${SEEDS:-0 1 2}"
 SPLITS="${SPLITS:-iid noniid}"
@@ -62,21 +63,21 @@ launch_job() {
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "fedit_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_fedit.sh" --split "$split" --seed "$seed"
+            "${GPU_VM_DIR}/run_fedit.sh" --split "$split" --seed "$seed" "$@"
     done
 done
 
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "ravan_gs_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_ravan_gs.sh" --split "$split" --seed "$seed"
+            "${GPU_VM_DIR}/run_ravan_gs.sh" --split "$split" --seed "$seed" "$@"
     done
 done
 
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "ravan_svd_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_ravan_svd.sh" --split "$split" --seed "$seed"
+            "${GPU_VM_DIR}/run_ravan_svd.sh" --split "$split" --seed "$seed" "$@"
     done
 done
 
@@ -97,7 +98,7 @@ if [ "$FAILED" -ne 0 ]; then
     exit 1
 fi
 
-"$PYTHON_BIN" "${A100_VM_DIR}/aggregate_results.py" \
+"$PYTHON_BIN" "${GPU_VM_DIR}/aggregate_results.py" \
     --parts-dir "$PARTS_DIR" \
     --final-dir "$FINAL_DIR"
 
