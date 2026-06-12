@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from sklearn.datasets import fetch_20newsgroups
 from torch.utils.data import DataLoader, TensorDataset
-from transformers import DistilBertTokenizerFast
+from transformers import AutoTokenizer, DistilBertTokenizerFast
 
 MODEL_NAME = "distilbert-base-uncased"
 NUM_LABELS = 20
@@ -101,6 +101,7 @@ def build_federated_loaders(
     cache_dir: str | None = None,
     limit_examples: int | None = None,
     limit_test_examples: int | None = None,
+    tokenizer_name: str | None = None,
 ):
     """Build DataLoaders for all clients and a central test loader.
 
@@ -114,6 +115,8 @@ def build_federated_loaders(
         cache_dir           : HuggingFace model/tokenizer cache directory
         limit_examples      : if set, subsample train data (smoke tests only)
         limit_test_examples : if set, subsample test data (smoke tests only)
+        tokenizer_name      : HuggingFace tokenizer name; defaults to DistilBERT.
+                              Pass "t5-base" to use the T5 tokenizer.
 
     Returns:
         client_loaders : list of DataLoader, one per client
@@ -124,7 +127,11 @@ def build_federated_loaders(
     train_data, test_data = load_20newsgroups()
 
     print("Loading tokenizer...")
-    tokenizer = DistilBertTokenizerFast.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
+    tok_name = tokenizer_name if tokenizer_name is not None else MODEL_NAME
+    if tokenizer_name is None:
+        tokenizer = DistilBertTokenizerFast.from_pretrained(tok_name, cache_dir=cache_dir)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(tok_name, cache_dir=cache_dir)
 
     # Optional: subsample for quick smoke tests (never use in research runs)
     train_texts = train_data.data

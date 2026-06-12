@@ -45,6 +45,12 @@ def federated_svd_init(
     run_dir: Path | None = None,
     cache_dir: str | None = None,
     train_head: bool = True,
+    make_model_fn=None,
+    inject_lora_fn=None,
+    get_lora_layers_fn=None,
+    count_params_fn=None,
+    use_amp: bool = False,
+    grad_accum_steps: int = 1,
 ) -> tuple[
     list[tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]],
     dict,
@@ -64,12 +70,28 @@ def federated_svd_init(
         run_dir           : directory to save optional diagnostics
         cache_dir         : HuggingFace cache directory for model loading
         train_head        : whether to include head in the temporary warm-up model
+        make_model_fn     : factory(train_head, cache_dir) -> nn.Module; defaults to DistilBERT
+        inject_lora_fn    : fn(model, rank) -> None; defaults to DistilBERT inject_lora
+        get_lora_layers_fn: fn(model) -> iterator; defaults to DistilBERT get_lora_layers
+        count_params_fn   : fn(model) -> dict; defaults to DistilBERT count_params_detailed
+        use_amp           : enable mixed-precision for warm-up client training (CUDA only)
+        grad_accum_steps  : gradient accumulation steps for warm-up client training
 
     Returns:
         svd_per_layer : list of length num_transformer_layers.
                         Each element is (q_svd, v_svd) where each svd is (U_R, Vh_R).
         costs         : dict with all warm-up cost and timing fields.
     """
+    # Resolve factory functions (default to DistilBERT)
+    if make_model_fn is None:
+        make_model_fn = lambda th, cd: make_distilbert(train_head=th, cache_dir=cd)
+    if inject_lora_fn is None:
+        inject_lora_fn = lambda m, r: inject_lora(m, rank=r)
+    if get_lora_layers_fn is None:
+        get_lora_layers_fn = get_lora_layers
+    if count_params_fn is None:
+        count_params_fn = count_params_detailed
+
     t_total_start = time.time()
 
     rng = np.random.default_rng(seed)
@@ -80,9 +102,9 @@ def federated_svd_init(
           f"steps={warmup_steps}, weighting={warmup_weighting}")
 
     # Count warm-up trainable params from one temporary model
-    _tmp = make_distilbert(train_head=train_head, cache_dir=cache_dir)
-    inject_lora(_tmp, rank=total_rank)
-    _warmup_detail = count_params_detailed(_tmp)
+    _tmp = make_model_fn(train_head, cache_dir)
+    inject_lora_fn(_tmp, total_rank)
+    _warmup_detail = count_params_fn(_tmp)
     warmup_trainable_params = _warmup_detail["total_trainable_params"]
     del _tmp
 
@@ -92,17 +114,20 @@ def federated_svd_init(
     t_train_start = time.time()
 
     for cid in selected:
-        warmup_model = make_distilbert(train_head=train_head, cache_dir=cache_dir)
-        inject_lora(warmup_model, rank=total_rank)
+        warmup_model = make_model_fn(train_head, cache_dir)
+        inject_lora_fn(warmup_model, total_rank)
 
-        local_train(warmup_model, client_loaders[cid], warmup_steps, lr, device)
+        local_train(
+            warmup_model, client_loaders[cid], warmup_steps, lr, device,
+            use_amp=use_amp, grad_accum_steps=grad_accum_steps,
+        )
 
         w = float(len(client_loaders[cid].dataset)) if warmup_weighting == "examples" else 1.0
         weights.append(w)
 
         # Client uploads factors B_c and A_c per layer (not the full product ΔW_c).
         # Server reconstructs ΔW_c = B_c @ A_c internally before aggregating.
-        layers = list(get_lora_layers(warmup_model))
+        layers = list(get_lora_layers_fn(warmup_model))
         client_factors: list[tuple[torch.Tensor, torch.Tensor]] = []
         for ll in layers:
             with torch.no_grad():

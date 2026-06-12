@@ -4,14 +4,28 @@ FedIT adapts LoRA to federated learning by averaging the A and B factor
 matrices separately after each round.  This is intentionally inexact:
 mean(B_c) @ mean(A_c) != mean(B_c @ A_c) in general.
 
+Supports --model_type distilbert (default) and --model_type t5.
+T5 mode uses T5EncoderModel + mean-pooling classification head (encoder
+approximation, not text-to-text).
+
 Usage:
+    # DistilBERT (original)
     python -m federated.train_fedit \\
         --split noniid --seed 0 --rounds 50 \\
         --clients 20 --clients_per_round 3 --local_steps 50 \\
         --rank 8 --lr 1e-3
 
-Cluster (DAIC):
-    sbatch jobs/submit_fedit.sh
+    # T5-base (encoder approximation)
+    python -m federated.train_fedit \\
+        --model_type t5 \\
+        --split noniid --seed 0 --rounds 100 \\
+        --clients 20 --clients_per_round 3 --local_steps 50 \\
+        --rank 32 --lr 1e-3 --max_length 256 \\
+        --use_amp --grad_accum_steps 2
+
+    # Profile mode (2 rounds, memory + timing report)
+    python -m federated.train_fedit --model_type t5 --profile \\
+        --split noniid --seed 0 --rounds 100 ...
 """
 
 import argparse
@@ -25,17 +39,46 @@ import torch
 
 from .client import local_train, evaluate
 from .data import build_federated_loaders
-from .model import (
-    count_adapter_communicated,
-    count_params_detailed,
-    count_communicated_per_round,
-    inject_lora,
-    make_distilbert,
-    print_param_summary,
-)
 from .plot import plot_all, plot_single_run
 from .server import fedit_aggregate, fedit_get_state, fedit_load_state
-from .utils import get_git_hash, make_run_dir, make_run_name, save_config, save_results
+from .utils import (
+    get_git_hash, make_run_dir, make_run_name,
+    save_config, save_profile_report, save_results,
+)
+
+# Tokenizer name per model type
+_TOKENIZER = {"distilbert": "distilbert-base-uncased", "t5": "t5-base"}
+# Adapted attention projection names per model type
+_ADAPTER_TARGETS = {"distilbert": ["q_lin", "v_lin"], "t5": ["q", "v"]}
+# Number of adapted linear layers per model type
+_ADAPTED_MATRICES = {"distilbert": 12, "t5": 24}
+
+
+def _load_model_components(model_type: str):
+    """Return (make_model, inject_lora, count_params_detailed,
+               count_communicated_per_round, count_adapter_communicated,
+               print_param_summary) for the given model_type."""
+    if model_type == "distilbert":
+        from .model import (
+            make_distilbert as make_model,
+            inject_lora,
+            count_params_detailed,
+            count_communicated_per_round,
+            count_adapter_communicated,
+            print_param_summary,
+        )
+    else:
+        from .model_t5 import (
+            make_t5_encoder as make_model,
+            inject_lora_t5 as inject_lora,
+            count_params_detailed_t5 as count_params_detailed,
+            count_communicated_per_round_t5 as count_communicated_per_round,
+            count_adapter_communicated_t5 as count_adapter_communicated,
+            print_param_summary_t5 as print_param_summary,
+        )
+    return (make_model, inject_lora, count_params_detailed,
+            count_communicated_per_round, count_adapter_communicated,
+            print_param_summary)
 
 
 def run(args):
@@ -50,7 +93,13 @@ def run(args):
         device = torch.device(args.device)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    print(f"Device: {device}  model_type: {args.model_type}")
+
+    # ── profile mode ─────────────────────────────────────────────────────────
+    profile_total_rounds = args.rounds
+    if args.profile:
+        args.rounds = 2
+        print(f"[PROFILE] Running 2 rounds (full run would be {profile_total_rounds})")
 
     t_run_start = time.time()
 
@@ -65,26 +114,31 @@ def run(args):
         cache_dir=args.cache_dir or None,
         limit_examples=args.limit_train_examples or None,
         limit_test_examples=args.limit_test_examples or None,
+        tokenizer_name=_TOKENIZER[args.model_type],
     )
 
     # ── model ─────────────────────────────────────────────────────────────────
+    (make_model, inject_lora, count_params_detailed,
+     count_communicated_per_round, count_adapter_communicated,
+     print_param_summary) = _load_model_components(args.model_type)
+
     train_head = args.train_classifier_head.lower() not in ("false", "0", "no")
-    model = make_distilbert(train_head=train_head, cache_dir=args.cache_dir or None)
+    model = make_model(train_head=train_head, cache_dir=args.cache_dir or None)
     inject_lora(model, rank=args.rank)
     model.to(device)
 
-    print("\nParameter summary (FedIT):")
+    method_label = "FedIT" if args.model_type == "distilbert" else f"T5-FedIT"
+    print(f"\nParameter summary ({method_label}):")
     print_param_summary(model)
 
-    param_detail = count_params_detailed(model)
-    comm_per_client = count_communicated_per_round(model)
-    comm_per_round = comm_per_client * args.clients_per_round
-    total_main_comm = comm_per_round * args.rounds
+    param_detail        = count_params_detailed(model)
+    comm_per_client     = count_communicated_per_round(model)
+    comm_per_round      = comm_per_client * args.clients_per_round
+    total_main_comm     = comm_per_round * args.rounds
     adapter_comm_per_client = count_adapter_communicated(model)
 
     print(f"  Communicated / round : {comm_per_round:,}")
-    print(f"  NOTE: FedIT aggregation is INEXACT — averaging A and B separately")
-    print(f"        mean(B_c)@mean(A_c) != mean(B_c@A_c) in general.\n")
+    print(f"  NOTE: FedIT aggregation is INEXACT — averaging A and B separately\n")
 
     # Initial global adapter state
     global_state = fedit_get_state(model)
@@ -92,8 +146,11 @@ def run(args):
     # ── FL loop ───────────────────────────────────────────────────────────────
     rng     = np.random.default_rng(args.seed + 1000)
     history = []
+    profile_client_times: list[float] = []
+    profile_peak_gpu_mb:  list[float] = []
 
-    print(f"FedIT — split={args.split}  seed={args.seed}  "
+    prefix = "" if args.model_type == "distilbert" else f"{args.model_type}_"
+    print(f"{method_label} — split={args.split}  seed={args.seed}  "
           f"rounds={args.rounds}  cpr={args.clients_per_round}  "
           f"steps={args.local_steps}  rank={args.rank}  lr={args.lr}\n")
 
@@ -105,14 +162,30 @@ def run(args):
 
         t_train_start = time.time()
         for cid in selected:
+            if args.profile and device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(device)
+            t_client_start = time.time()
+
             fedit_load_state(model, global_state)
-            local_train(model, client_loaders[cid], args.local_steps, args.lr, device)
+            local_train(
+                model, client_loaders[cid], args.local_steps, args.lr, device,
+                use_amp=args.use_amp,
+                grad_accum_steps=args.grad_accum_steps,
+                use_grad_checkpoint=args.grad_checkpoint,
+            )
             client_states.append(fedit_get_state(model))
+
+            if args.profile:
+                profile_client_times.append(time.time() - t_client_start)
+                if device.type == "cuda":
+                    profile_peak_gpu_mb.append(
+                        torch.cuda.max_memory_allocated(device) / 1e6
+                    )
+
         train_runtime_s = time.time() - t_train_start
 
         global_state = fedit_aggregate(client_states)
 
-        # Evaluate every eval_every rounds
         acc = None
         if rnd % args.eval_every == 0 or rnd == args.rounds:
             fedit_load_state(model, global_state)
@@ -121,11 +194,11 @@ def run(args):
         elapsed = time.time() - t_round_start
 
         row = {
-            "round":                rnd,
-            "test_acc":             round(acc, 6) if acc is not None else None,
-            "test_loss":            None,
-            "elapsed_seconds":      round(elapsed, 2),
-            "selected_clients":     str(selected),
+            "round":                 rnd,
+            "test_acc":              round(acc, 6) if acc is not None else None,
+            "test_loss":             None,
+            "elapsed_seconds":       round(elapsed, 2),
+            "selected_clients":      str(selected),
             "train_runtime_seconds": round(train_runtime_s, 2),
         }
         history.append(row)
@@ -138,7 +211,7 @@ def run(args):
                   f"time={elapsed:.1f}s")
 
     # ── save ──────────────────────────────────────────────────────────────────
-    run_name = make_run_name("fedit", args.split, args.seed)
+    run_name = make_run_name(f"{prefix}fedit", args.split, args.seed)
     run_dir  = make_run_dir(run_name, output_dir=args.output_dir or None)
 
     accs = [r["test_acc"] for r in history if r["test_acc"] is not None]
@@ -154,17 +227,18 @@ def run(args):
         "newsgroups_remove": "headers,footers,quotes",
         "lora_scaling": 1.0,
         "train_head": train_head,
-        "adapter_targets": ["q_lin", "v_lin"],
-        "adapted_matrices": 12,
+        "adapter_targets": _ADAPTER_TARGETS[args.model_type],
+        "adapted_matrices": _ADAPTED_MATRICES[args.model_type],
     })
     save_config(cfg, run_dir)
 
     summary = {
         "run_name":                    run_name,
-        "method":                      "fedit",
+        "method":                      f"{prefix}fedit",
         "init":                        "lora",
         "split":                       args.split,
         "seed":                        args.seed,
+        "model_type":                  args.model_type,
         "rounds":                      args.rounds,
         "clients":                     args.clients,
         "clients_per_round":           args.clients_per_round,
@@ -173,6 +247,9 @@ def run(args):
         "heads":                       None,
         "lr":                          args.lr,
         "batch_size":                  args.batch_size,
+        "grad_accum_steps":            args.grad_accum_steps,
+        "effective_batch_size":        args.batch_size * args.grad_accum_steps,
+        "use_amp":                     args.use_amp,
         "dirichlet_alpha":             args.dirichlet_alpha,
         "max_length":                  args.max_length,
         "final_acc":                   accs[-1] if accs else None,
@@ -181,9 +258,9 @@ def run(args):
         "best_test_acc":               max(accs) if accs else None,
         "final_loss":                  None,
         **param_detail,
-        "communicated_params_per_round": comm_per_round,
-        "communicated_adapter_params_per_client": adapter_comm_per_client,
-        "total_main_communication_params": total_main_comm,
+        "communicated_params_per_round":           comm_per_round,
+        "communicated_adapter_params_per_client":  adapter_comm_per_client,
+        "total_main_communication_params":         total_main_comm,
         "warmup_clients":              None,
         "warmup_steps":                None,
         "warmup_rank":                 None,
@@ -205,16 +282,36 @@ def run(args):
     valid_history = [r for r in history if r["test_acc"] is not None]
     if valid_history:
         plot_single_run(run_name, valid_history, run_dir)
-    plot_all(results_dir)  # uses RESULTS_DIR default when results_dir is None
+    plot_all(results_dir)
 
     if args.save_checkpoints.lower() not in ("false", "0", "no"):
         ckpt_path = run_dir / "checkpoint_final.pt"
         torch.save(model.state_dict(), ckpt_path)
         print(f"Checkpoint → {ckpt_path}")
 
+    # ── profile report ────────────────────────────────────────────────────────
+    if args.profile and profile_client_times:
+        total_elapsed = sum(r["elapsed_seconds"] for r in history)
+        profile_data = {
+            "model_type":             args.model_type,
+            "split":                  args.split,
+            "seed":                   args.seed,
+            "num_rounds_profiled":    2,
+            "total_rounds_requested": profile_total_rounds,
+            "avg_client_time_s":      round(sum(profile_client_times) / len(profile_client_times), 3),
+            "total_2round_time_s":    round(total_elapsed, 2),
+            "estimated_total_s":      round((total_elapsed / 2) * profile_total_rounds, 1),
+            "peak_gpu_memory_mb":     round(max(profile_peak_gpu_mb), 1) if profile_peak_gpu_mb else None,
+        }
+        save_profile_report(profile_data, run_dir)
+
 
 def main():
     parser = argparse.ArgumentParser(description="FedIT federated LoRA baseline")
+
+    # Model selection
+    parser.add_argument("--model_type", choices=["distilbert", "t5"], default="distilbert",
+                        help="Backbone model: distilbert (default) or t5 (T5-encoder approximation)")
 
     # Federated setup
     parser.add_argument("--split",            choices=["iid", "noniid"], default="noniid")
@@ -227,42 +324,44 @@ def main():
                         help="Evaluate on test set every N rounds")
 
     # LoRA
-    parser.add_argument("--rank",             type=int,   default=8)
+    parser.add_argument("--rank",             type=int,   default=8,
+                        help="LoRA rank (default 8 for distilbert; 32 recommended for t5)")
 
     # Optimisation
     parser.add_argument("--lr",               type=float, default=1e-3)
     parser.add_argument("--batch_size",       type=int,   default=16)
+    parser.add_argument("--grad_accum_steps", type=int,   default=1,
+                        help="Gradient accumulation steps (effective_bs = batch_size × grad_accum_steps)")
+    parser.add_argument("--use_amp",          action="store_true",
+                        help="Enable mixed-precision training (float16, CUDA only)")
+    parser.add_argument("--grad_checkpoint",  action="store_true",
+                        help="Enable gradient checkpointing to reduce activation memory")
     parser.add_argument("--max_length",       type=int,   default=128,
-                        help="Tokenizer max sequence length")
+                        help="Tokenizer max sequence length (use 256 for t5)")
 
     # Non-IID concentration
-    parser.add_argument("--dirichlet_alpha",  type=float, default=0.3,
-                        help="Dirichlet concentration for noniid split (alpha=0.3)")
-    # Legacy alias kept for backward compat
+    parser.add_argument("--dirichlet_alpha",  type=float, default=0.3)
     parser.add_argument("--alpha",            type=float, default=None,
-                        help="Alias for --dirichlet_alpha (deprecated; use --dirichlet_alpha)")
+                        help="Alias for --dirichlet_alpha (deprecated)")
 
     # Infrastructure
-    parser.add_argument("--output_dir",       type=str,   default=None,
-                        help="Root directory for results (default: results/)")
-    parser.add_argument("--device",           type=str,   default=None,
-                        help="torch device string, e.g. 'cuda' or 'cpu'")
-    parser.add_argument("--cache_dir",        type=str,   default=None,
-                        help="HuggingFace model/tokenizer cache directory")
-    parser.add_argument("--train_classifier_head", type=str, default="true",
-                        help="Whether to train the shared classification head (default: true)")
-    parser.add_argument("--save_checkpoints", type=str,   default="false",
-                        help="Save final model checkpoint (default: false)")
+    parser.add_argument("--output_dir",       type=str,   default=None)
+    parser.add_argument("--device",           type=str,   default=None)
+    parser.add_argument("--cache_dir",        type=str,   default=None)
+    parser.add_argument("--train_classifier_head", type=str, default="true")
+    parser.add_argument("--save_checkpoints", type=str,   default="false")
 
-    # Smoke-test helpers (do NOT use for real experiments)
-    parser.add_argument("--limit_train_examples", type=int, default=None,
-                        help="[smoke test only] Subsample training data to N examples")
-    parser.add_argument("--limit_test_examples",  type=int, default=None,
-                        help="[smoke test only] Subsample test data to N examples")
+    # Profiling
+    parser.add_argument("--profile",          action="store_true",
+                        help="Profile mode: run 2 rounds then report GPU memory, "
+                             "seconds/client, and estimated total runtime")
+
+    # Smoke-test helpers
+    parser.add_argument("--limit_train_examples", type=int, default=None)
+    parser.add_argument("--limit_test_examples",  type=int, default=None)
 
     args = parser.parse_args()
 
-    # Resolve --alpha alias
     if args.alpha is not None and args.dirichlet_alpha == 0.3:
         args.dirichlet_alpha = args.alpha
 

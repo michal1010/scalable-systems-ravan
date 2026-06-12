@@ -58,21 +58,30 @@ _HEAD_PREFIX  = "head/"
 def ravan_get_upload(model: nn.Module) -> dict[str, torch.Tensor]:
     """Construct what a client sends to the server:
     - For each RavanLinear: s_i * H_i products  [heads, rank, rank]
-    - Head params: pre_classifier.*, classifier.*
+    - All other trainable params (head, etc.) uploaded by name.
+
+    Model-agnostic: works for DistilBERT and T5 without name hardcoding.
     """
     upload: dict[str, torch.Tensor] = {}
 
+    # Collect all RavanLinear module paths so their params are excluded below.
+    ravan_prefixes: set[str] = set()
     for name, module in model.named_modules():
         if isinstance(module, RavanLinear):
-            # scales: [heads]  →  broadcast to [heads, rank, rank]
             sH = (module.scales[:, None, None] * module.H).detach().clone()
             upload[f"{_RAVAN_PREFIX}{name}"] = sH
+            ravan_prefixes.add(name)
 
-    trainable = {n for n, p in model.named_parameters() if p.requires_grad}
-    sd = model.state_dict()
-    for k in sd:
-        if ("pre_classifier" in k or k.startswith("classifier")) and k in trainable:
-            upload[f"{_HEAD_PREFIX}{k}"] = sd[k].clone()
+    # Upload all trainable params NOT inside any RavanLinear module.
+    for pname, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        in_ravan = any(
+            pname == prefix or pname.startswith(prefix + ".")
+            for prefix in ravan_prefixes
+        )
+        if not in_ravan:
+            upload[f"{_HEAD_PREFIX}{pname}"] = param.detach().clone()
 
     return upload
 

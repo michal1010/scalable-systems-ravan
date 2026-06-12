@@ -33,13 +33,30 @@ pip install -r requirements.txt
 
 ## Running experiments
 
+### Default hyperparameters
+
+| Parameter | FedIT | Ravan-GS / Ravan-SVD |
+|---|---|---|
+| `--rounds` | 50 | 50 |
+| `--clients` | 20 | 20 |
+| `--clients_per_round` | 3 | 3 |
+| `--local_steps` | 50 | 50 |
+| `--lr` | 1e-3 | 5e-4 |
+| `--batch_size` | 16 | 16 |
+| `--rank` | 8 | 55 |
+| `--heads` | — | 4 |
+| `--dirichlet_alpha` | 0.3 | 0.3 |
+| `--max_length` | 128 | 128 |
+| `--warmup_clients` | — | 5 |
+| `--warmup_steps` | — | 50 |
+
 ### FedIT
 
 ```bash
 python -m federated.train_fedit \
     --split noniid --seed 0 --rounds 50 \
     --clients 20 --clients_per_round 3 --local_steps 50 \
-    --rank 8 --lr 1e-3
+    --rank 8 --lr 1e-3 --batch_size 16
 ```
 
 ### Ravan — Gram-Schmidt initialization
@@ -48,7 +65,7 @@ python -m federated.train_fedit \
 python -m federated.train_ravan \
     --init gram_schmidt --split noniid --seed 0 --rounds 50 \
     --clients 20 --clients_per_round 3 --local_steps 50 \
-    --heads 4 --rank 55 --lr 5e-4
+    --heads 4 --rank 55 --lr 5e-4 --batch_size 16
 ```
 
 ### Ravan — SVD warm-up initialization
@@ -57,65 +74,296 @@ python -m federated.train_ravan \
 python -m federated.train_ravan \
     --init svd --split noniid --seed 0 --rounds 50 \
     --clients 20 --clients_per_round 3 --local_steps 50 \
-    --heads 4 --rank 55 --lr 5e-4 \
+    --heads 4 --rank 55 --lr 5e-4 --batch_size 16 \
     --warmup_clients 5 --warmup_steps 50
 ```
 
-### Smoke tests (fast local check, 2 rounds / 5 steps)
+To save singular value spectra for plotting (adds `singular_values.png` to paper assets):
 
 ```bash
+python -m federated.train_ravan --init svd ... --save_singular_values true
+```
+
+### Additional CLI flags (all scripts)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--eval_every` | 1 | Evaluate on test set every N rounds |
+| `--output_dir` | `results/` | Root directory for run outputs |
+| `--device` | auto | e.g. `cuda` or `cpu` |
+| `--cache_dir` | None | HuggingFace model/tokenizer cache |
+| `--train_classifier_head` | `true` | Whether to train the shared classification head |
+| `--save_checkpoints` | `false` | Save final model as `checkpoint_final.pt` |
+| `--warmup_lr` | same as `--lr` | Learning rate for SVD warm-up phase |
+| `--warmup_weighting` | `uniform` | `uniform` or `examples` (weight by dataset size) |
+
+Flags `--limit_train_examples` and `--limit_test_examples` are for smoke tests only; do not
+use in real experiments.
+
+---
+
+## Smoke tests and validation
+
+```bash
+# 6 tiny runs: all methods × splits, 2 rounds / 5 steps, 500 train examples, 200 test examples
 bash scripts/run_smoke_grid.sh
+
+# Set LIMIT=0 to disable example limiting (still uses 2 rounds / 5 steps)
+LIMIT=0 bash scripts/run_smoke_grid.sh
+
+# Fast contract check (~15s): verifies protocol constants, data preprocessing,
+# optimizer settings, warm-up comm counts, parameter accounting, zero init
+python -m scripts.validate_experiment_contract
+
+# Full preflight: pytest → contract check → smoke grid → asset generation
+bash scripts/preflight.sh
 ```
-
-This runs all 3 methods × 2 splits, limiting train data to 500 examples by default. Pass `LIMIT=0`
-to use the full dataset.
-
-### Full 18-job grid (cluster)
-
-```bash
-bash jobs/sweep.sh          # 3 methods × 2 splits × 3 seeds on DAIC
-```
-
-### Generate paper assets
-
-```bash
-python -m scripts.generate_report_assets --results_dir results --out_dir paper_assets
-```
-
-Can be run after each partial batch of results — missing method/split combinations are skipped.
 
 ---
 
 ## Correctness tests
 
 ```bash
+# All 12 tests
 python -m pytest tests/ -v
-python -m pytest tests/test_aggregation.py::test_ravan_exact_aggregation -v  # single test
+
+# Single test
+python -m pytest tests/test_aggregation.py::test_ravan_exact_aggregation -v
 ```
 
-12 tests covering: Ravan exact aggregation, FedIT mismatch, GS orthogonality, SVD orthogonality,
-zero initial adapter output (Ravan + LoRA), parameter budget counting, report asset generation,
-warm-up factor communication count (20,275,200), SVD head isolation, non-empty client splits,
-and exact parameter accounting for all methods.
+Tests in `tests/test_aggregation.py`:
+
+| Test | What it checks |
+|---|---|
+| `test_ravan_exact_aggregation` | Averaging `s·H` products = exact ΔW aggregation |
+| `test_fedit_mismatch` | `mean(B_c)@mean(A_c) ≠ mean(B_c@A_c)` — verifies the FedIT baseline mismatch exists |
+| `test_gram_schmidt_orthogonality` | GS-initialized `B[h]` columns and `A[h]` rows are orthonormal |
+| `test_svd_init_orthogonality` | Same for SVD-initialized bases |
+| `test_ravan_zero_init_output` | With `H=0`, adapter output is zero |
+| `test_lora_zero_init_output` | With `B=0`, LoRA output is zero |
+| `test_param_budget_counting` | FedIT `r=8` and Ravan `h=4, r=55` have matching adapter param counts |
+| `test_result_asset_generation_with_dummy_data` | Tables and figures are generated from synthetic results |
+| `test_warmup_factor_communication_count` | Warm-up comm cost = 20,275,200 params |
+| `test_ravan_svd_head_matches_pretrained` | SVD init preserves pretrained head weights |
+| `test_nonempty_client_splits` | All clients receive at least one sample in both IID and non-IID splits |
+| `test_parameter_accounting` | Exact trainable and communicated param counts for all methods |
 
 ---
 
-## Validation
+## Paper asset generation
 
 ```bash
-# Fast contract check (~15s): verifies all protocol constants against expected values
-python -m scripts.validate_experiment_contract
-
-# Full preflight (pytest → contract → smoke grid → asset generation)
-bash scripts/preflight.sh
+# Safe to re-run with partial results — missing method/split/seed combos are skipped
+python -m scripts.generate_report_assets --results_dir results --out_dir paper_assets
 ```
 
-`validate_experiment_contract` checks 7 areas: static constants (`MODEL_NAME`, `NUM_LABELS`,
-`MAX_LENGTH`), data preprocessing (`remove=headers,footers,quotes`), optimizer settings
-(AdamW, `weight_decay=0.01`, CrossEntropyLoss), warm-up protocol (client uploads factors;
-server reconstructs `ΔW_c = B_c @ A_c`; comm counts `B_c.numel() + A_c.numel()`),
-exact adapter param counts for both methods, zero initial adapter output, and SVD singular
-values not absorbed.
+### Tables (`paper_assets/tables/`)
+
+| File | Contents |
+|---|---|
+| `main_results.csv` / `.tex` | Method × split accuracy (mean±std), adapter params, comm params, gaps |
+| `init_costs.csv` / `.tex` | Warm-up stages, clients, temp. rank, extra comm., SVD runtime, Non-IID acc. |
+| `gap_analysis.csv` | Per-method accuracy gaps vs FedIT; SVD vs GS |
+| `setup_summary.csv` | Shared experimental setup (model, optimizer, splits, seeds, hyperparameters) |
+| `parameter_budget.csv` | Adapter, head, and total trainable/communicated params per method |
+
+### Figures (`paper_assets/figures/`)
+
+| File | Shows |
+|---|---|
+| `learning_curves_iid.png` | Test accuracy vs round, mean±std (IID) |
+| `learning_curves_noniid.png` | Same for Non-IID |
+| `final_accuracy_by_method_split.png` | Grouped bar chart, method × split, error bars = std |
+| `iid_vs_noniid_drop.png` | Per-method IID − Non-IID accuracy drop |
+| `gap_analysis.png` | Ravan accuracy gain relative to FedIT baseline |
+| `init_cost_vs_accuracy.png` | Warm-up communication cost vs final Non-IID accuracy |
+| `singular_values.png` | ΔW singular value spectra (only if `--save_singular_values true` was used) |
+
+`paper_assets/manifest.json` records the ISO timestamp of last generation, which of the
+18 expected `(method, split, seed)` configs were found, and which are still missing.
+
+---
+
+## Result structure
+
+Each run writes to a timestamped directory `results/<run_name>/`:
+
+```
+results/
+  all_results.csv                  ← master index, one row per run, appended on each run
+  <method>_<split>_seed<N>_<ts>/
+    config.json                    ← all CLI args + param counts + device info
+    summary.json                   ← flat dict: final/best acc, all cost fields, git hash, timestamp
+    rounds.csv                     ← per-round: round, test_acc, elapsed_seconds,
+    │                                           selected_clients, train_runtime_seconds
+    curve.png                      ← per-run learning curve
+    checkpoint_final.pt            ← (only if --save_checkpoints true)
+```
+
+Run names follow the pattern:
+- `fedit_iid_seed0_20260610_140000`
+- `ravan_gram_schmidt_noniid_seed2_20260610_140000`
+- `ravan_svd_iid_seed1_20260610_140000`
+
+`summary.json` key fields:
+
+| Key | Description |
+|---|---|
+| `final_acc` / `best_acc` | Test accuracy at last round / best round |
+| `communicated_adapter_params_per_client` | Adapter params uploaded per client per round |
+| `total_main_communication_params` | `comm_per_client × clients_per_round × rounds` |
+| `warmup_communicated_params` | Extra params for SVD warm-up (0 for GS) |
+| `warmup_train_runtime_s` / `warmup_svd_runtime_s` | Timing breakdown for SVD init |
+| `total_runtime_s` | Wall-clock time for the full run |
+| `git_commit` | Commit hash at run time |
+
+---
+
+## Results snapshot
+
+> **Note:** The results below are from smoke-test runs (2 rounds, 5 steps, 500 training
+> examples, seed 0 only). They are not representative of converged results. The full
+> 18-job grid (3 methods × 2 splits × 3 seeds, 50 rounds, 50 steps) is pending.
+
+| Method | Init | IID Acc | Non-IID Acc | Non-IID drop | Adapter comm./client |
+|---|---|---|---|---|---|
+| FedIT | LoRA | 17.5% | 14.0% | 3.5 pp | 147,456 |
+| Ravan-GS | Gram-Schmidt | 15.5% | 5.5% | 10.0 pp | 145,200 |
+| Ravan-SVD | SVD warm-up | 12.5% | 6.0% | 6.5 pp | 145,200 |
+
+Parameter budget (shared across all runs):
+
+| Method | Adapter params | Head params | Total trainable | Comm./round |
+|---|---|---|---|---|
+| FedIT | 147,456 | 605,972 | 753,428 | 2,260,284 |
+| Ravan-GS | 145,248 | 605,972 | 751,220 | 2,253,516 |
+| Ravan-SVD | 145,248 | 605,972 | 751,220 | 2,253,516 |
+
+---
+
+## Running on DAIC (TU Delft cluster)
+
+The DAIC jobs use an **Apptainer container** (`jobs/container/ravan-experiments.sif`).
+Build and deploy the container before submitting jobs.
+
+### Step 0 — Build the container (once, on a machine with Apptainer)
+
+```bash
+cd jobs/container
+./build.sh          # produces ravan-experiments.sif (~5 min)
+```
+
+### Step 1 — Deploy the container to DAIC
+
+```bash
+cd jobs/container
+./deploy.sh <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<PROJECT>/apptainer/ravan-experiments.sif
+```
+
+### Step 2 — Upload the repo to project storage
+
+```bash
+# On campus / with eduVPN
+rsync --progress -avz --no-perms \
+    ./ <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<PROJECT>/scalable-systems-ravan/
+
+# Off campus — route through bastion
+rsync --progress -avz --no-perms \
+    -e "ssh -J <NetID>@linux-bastion.tudelft.nl" \
+    ./ <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<PROJECT>/scalable-systems-ravan/
+```
+
+### Step 3 — Point job scripts at the container image
+
+In all three `jobs/submit_*.sh` files (or via the `APPTAINER_IMAGE` env var), set:
+
+```bash
+export APPTAINER_IMAGE=/tudelft.net/staff-umbrella/<PROJECT>/apptainer/ravan-experiments.sif
+```
+
+The `container_env.sh` sourced by all job scripts automatically sets
+`HF_HOME` to `<project_root>/.cache/huggingface` inside the container to avoid home quota issues.
+
+### Step 4 — Submit 18 jobs
+
+```bash
+cd /tudelft.net/staff-umbrella/<PROJECT>/scalable-systems-ravan
+mkdir -p logs results                # Slurm creates the log file before the script runs
+bash jobs/sweep.sh                   # 3 methods × 2 splits × 3 seeds = 18 jobs
+```
+
+To submit a single job or override split/seed:
+
+```bash
+sbatch jobs/submit_fedit.sh                        # default: noniid, seed 0
+sbatch jobs/submit_fedit.sh --split iid --seed 2   # override via $@
+```
+
+Slurm settings (all jobs): `--partition=general`, `--qos=short`, `--time=4:00:00`,
+1 GPU, 4 CPUs, 16 GB RAM. Logs go to `logs/<jobname>_<jobid>.out/.err`.
+
+### Step 5 — Monitor
+
+```bash
+squeue -u $USER
+tail -f logs/fedit_<jobID>.out
+seff <jobID>                         # CPU/memory efficiency after completion
+```
+
+### Step 6 — Generate paper assets (login node, after all jobs finish)
+
+```bash
+python -m scripts.generate_report_assets --results_dir results --out_dir paper_assets
+```
+
+### Step 7 — Download results
+
+```bash
+rsync --progress -avz --no-perms \
+    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<PROJECT>/scalable-systems-ravan/results/ \
+    ./results/
+
+rsync --progress -avz --no-perms \
+    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<PROJECT>/scalable-systems-ravan/paper_assets/ \
+    ./paper_assets/
+```
+
+---
+
+## Running on a GPU VM (no Slurm)
+
+Scripts under `jobs/gpu_vm/` run the same 18-job grid directly on a VM with a GPU,
+without Slurm or a container. Results go to `results_a100_vm/`, logs to `logs_a100_vm/`.
+
+```bash
+# Full 18-job sweep (default: 2 parallel jobs)
+bash jobs/gpu_vm/sweep.sh
+
+# Control parallelism
+MAX_PARALLEL=3 bash jobs/gpu_vm/sweep.sh   # more parallel jobs (more GPU memory needed)
+MAX_PARALLEL=1 bash jobs/gpu_vm/sweep.sh   # sequential (safest if OOM)
+```
+
+Single runs:
+
+```bash
+bash jobs/gpu_vm/run_fedit.sh --split noniid --seed 0
+bash jobs/gpu_vm/run_ravan_gs.sh --split iid --seed 1
+bash jobs/gpu_vm/run_ravan_svd.sh --split noniid --seed 2
+```
+
+Environment overrides:
+
+```bash
+CONDA_ENV=ravan MAX_PARALLEL=2 bash jobs/gpu_vm/sweep.sh
+PYTHON_BIN=/path/to/python bash jobs/gpu_vm/run_fedit.sh
+CUDA_VISIBLE_DEVICES=0 bash jobs/gpu_vm/sweep.sh
+HF_HOME=/scratch/.cache/huggingface bash jobs/gpu_vm/sweep.sh
+```
+
+After the sweep, `jobs/gpu_vm/aggregate_results.py` is called automatically to merge
+per-run subdirectories from `results_a100_vm/sweep_<ts>/parts/` into
+`results_a100_vm/sweep_<ts>/final/` and rebuild `all_results.csv`.
 
 ---
 
@@ -307,6 +555,9 @@ discarded after `federated_svd_init` returns.
 Per layer per client: `R × (d_out + d_in) = 220 × (768 + 768) = 337,920`.
 Total: `5 clients × 12 layers × 337,920 = 20,275,200` parameters.
 
+The main FL loop re-applies the same random seeds after warm-up completes, so model
+initialization is deterministic and independent of whether the SVD warm-up ran.
+
 ---
 
 ### `federated/train_fedit.py` and `federated/train_ravan.py` — training loop
@@ -328,23 +579,6 @@ Both scripts share the same FL loop structure:
    - Evaluate on the central test set every `eval_every` rounds (default: every round).
 7. Save `summary.json`, `rounds.csv`, `config.json`, per-run learning curve.
 8. Regenerate all comparison figures from `results/` (calling `plot.plot_all`).
-
-**Default hyperparameters:**
-
-| Parameter | FedIT | Ravan-GS / Ravan-SVD |
-|---|---|---|
-| `--rounds` | 50 | 50 |
-| `--clients` | 20 | 20 |
-| `--clients_per_round` | 3 | 3 |
-| `--local_steps` | 50 | 50 |
-| `--lr` | 1e-3 | 5e-4 |
-| `--batch_size` | 16 | 16 |
-| `--dirichlet_alpha` | 0.3 | 0.3 |
-| `--max_length` | 128 | 128 |
-| `--rank` | 8 | 55 |
-| `--heads` | — | 4 |
-| `--warmup_clients` | — | 5 |
-| `--warmup_steps` | — | 50 |
 
 ---
 
@@ -375,38 +609,6 @@ When multiple runs share the same `(method, split, seed)` key, the most recent r
 
 ---
 
-### `scripts/generate_report_assets.py` — paper tables and figures
-
-Run after all experiments complete. Reads `results/all_results.csv` and per-run `rounds.csv`
-files. Outputs to `paper_assets/`:
-
-**Tables** (`paper_assets/tables/`):
-
-| File | Contents |
-|---|---|
-| `main_results.csv` / `.tex` | Table 4: Method × split accuracy (mean±std), adapter trainable, adapter comm., gap vs FedIT, IID-to-Non-IID drop |
-| `init_costs.csv` / `.tex` | Table 5: Ravan init comparison — warm-up stages, clients, temp. rank, extra comm., SVD runtime, main comm., Non-IID acc. |
-| `gap_analysis.csv` | Per-method accuracy gaps: vs FedIT for both splits, SVD vs GS |
-| `setup_summary.csv` | Shared experimental setup (model, optimizer, splits, seeds, all hyperparameters) |
-| `parameter_budget.csv` | Adapter, head, and total trainable/communicated params per method |
-
-`paper_assets/manifest.json` records which of the 18 expected `(method, split, seed)` configs
-were found and which are still missing, with ISO timestamp of last generation.
-
-**Figures** (`paper_assets/figures/`):
-
-| File | Shows |
-|---|---|
-| `learning_curves_iid.png` | Test accuracy vs round, mean±std (IID) |
-| `learning_curves_noniid.png` | Same for Non-IID |
-| `final_accuracy_by_method_split.png` | Grouped bar chart, method × split, error bars = std |
-| `iid_vs_noniid_drop.png` | Per-method IID − Non-IID accuracy drop |
-| `gap_analysis.png` | Ravan accuracy gain relative to FedIT baseline |
-| `init_cost_vs_accuracy.png` | Warm-up communication cost vs final Non-IID accuracy |
-| `singular_values.png` | ΔW singular value spectra (only if `--save_singular_values true` was used) |
-
----
-
 ## Parameter budget
 
 Default rank choices are chosen so that FedIT and Ravan have approximately equal adapter
@@ -431,7 +633,9 @@ Total trainable:
 - FedIT: 147,456 + 605,972 = **753,428**
 - Ravan: 145,248 + 605,972 = **751,220**
 
-Ravan trains 48 additional scale parameters (one per head per layer) that are absorbed into the s·H upload and not communicated separately. FedIT communicates 753,428 per client per round; Ravan communicates 751,172.
+Ravan trains 48 additional scale parameters (one per head per layer) that are absorbed into
+the `s·H` upload and not communicated separately. FedIT communicates 753,428 per client per
+round; Ravan communicates 751,172.
 
 ---
 
@@ -451,14 +655,14 @@ fetch_20newsgroups()
 
 Ravan-SVD warm-up (once, before main FL):
 
-  select warmup_clients
-       │ local_train (LoRA, rank=220)
+  select warmup_clients (seed = main_seed + 9999)
+       │ local_train (LoRA, rank=220, warmup_steps)
        ▼
   client uploads B_c [768×220] and A_c [220×768] per layer  ← factors, not ΔW
        │ server reconstructs ΔW_c = B_c @ A_c, aggregates, runs SVD
        ▼
   frozen bases U_R, Vh_R → inject_ravan  (H=0, scales=1)
-  warm-up model discarded
+  warm-up model discarded; main seeds re-applied
 
 
 Main FL loop (train_fedit.py / train_ravan.py):
@@ -466,7 +670,7 @@ Main FL loop (train_fedit.py / train_ravan.py):
   global_state (server)
        │
        ▼
-  sample clients_per_round
+  sample clients_per_round (seed = main_seed + 1000)
        │ load global_state
        ▼
   local_train (AdamW, local_steps gradient steps, CrossEntropyLoss)
@@ -480,82 +684,7 @@ Main FL loop (train_fedit.py / train_ravan.py):
        │
        ▼
   save rounds.csv / summary.json / update all_results.csv
-```
-
----
-
-## Running on DAIC (TU Delft cluster)
-
-### Storage
-
-Put the repo on project storage to avoid home quota issues:
-
-```bash
-/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/
-```
-
-### Step 1 — Upload
-
-```bash
-# On campus / with eduVPN
-rsync --progress -avz --no-perms \
-    ./ <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/
-
-# Off campus — route through bastion
-rsync --progress -avz --no-perms \
-    -e "ssh -J <NetID>@linux-bastion.tudelft.nl" \
-    ./ <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/
-```
-
-### Step 2 — Environment (once, on login node)
-
-```bash
-module use /opt/insy/modulefiles
-module load miniconda
-conda create -n ravan python=3.10 -y
-conda activate ravan
-pip install -r requirements.txt
-```
-
-Set HuggingFace cache to project storage in all three `jobs/submit_*.sh` files:
-
-```bash
-export HF_HOME=/tudelft.net/staff-umbrella/<DAIC_PROJECT>/.cache/huggingface
-```
-
-### Step 3 — Submit 18 jobs
-
-```bash
-cd /tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan
-bash jobs/sweep.sh        # 3 methods × 2 splits × 3 seeds
-```
-
-Each job: `--partition=general`, `--qos=short`, `--time=4:00:00`, 1 GPU, 4 CPUs, 16 GB RAM.
-
-### Step 4 — Monitor
-
-```bash
-squeue -u $USER
-tail -f logs/fedit_<jobID>.out
-seff <jobID>
-```
-
-### Step 5 — Generate paper assets (login node, after all jobs)
-
-```bash
-python -m scripts.generate_report_assets --results_dir results --out_dir paper_assets
-```
-
-### Step 6 — Download results
-
-```bash
-rsync --progress -avz --no-perms \
-    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/paper_assets/ \
-    ./paper_assets/
-
-rsync --progress -avz --no-perms \
-    <NetID>@login.daic.tudelft.nl:/tudelft.net/staff-umbrella/<DAIC_PROJECT>/scalable-systems-ravan/results/ \
-    ./results/
+  regenerate results/comparison_*.png
 ```
 
 ---
