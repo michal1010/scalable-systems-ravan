@@ -47,6 +47,16 @@ def save_config(cfg: dict, run_dir: Path) -> None:
     print(f"Config  → {path}")
 
 
+def append_round_result(row: dict, csv_path: Path) -> None:
+    """Append one completed round to a live per-run CSV."""
+    write_header = not csv_path.exists()
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 def save_results(
     summary: dict,
     history: list[dict],
