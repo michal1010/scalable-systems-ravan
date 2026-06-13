@@ -43,7 +43,7 @@ from .plot import plot_all, plot_single_run
 from .server import ravan_aggregate, ravan_get_upload, ravan_load_global
 from .utils import (
     get_git_hash, make_run_dir, make_run_name,
-    save_config, save_profile_report, save_results, append_round_result,
+    save_config, save_results, append_round_result,
 )
 from .warmup import federated_svd_init
 
@@ -375,22 +375,6 @@ def run(args):
         torch.save(model.state_dict(), ckpt_path)
         print(f"Checkpoint → {ckpt_path}")
 
-    # ── profile report ────────────────────────────────────────────────────────
-    if args.profile and profile_client_times:
-        total_elapsed = sum(r["elapsed_seconds"] for r in history)
-        profile_data = {
-            "model_type":             args.model_type,
-            "init":                   args.init,
-            "split":                  args.split,
-            "seed":                   args.seed,
-            "num_rounds_profiled":    2,
-            "total_rounds_requested": profile_total_rounds,
-            "avg_client_time_s":      round(sum(profile_client_times) / len(profile_client_times), 3),
-            "total_2round_time_s":    round(total_elapsed, 2),
-            "estimated_total_s":      round((total_elapsed / 2) * profile_total_rounds, 1),
-            "peak_gpu_memory_mb":     round(max(profile_peak_gpu_mb), 1) if profile_peak_gpu_mb else None,
-        }
-        save_profile_report(profile_data, run_dir)
 
 
 def main():
