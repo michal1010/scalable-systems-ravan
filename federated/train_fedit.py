@@ -43,7 +43,7 @@ from .plot import plot_all, plot_single_run
 from .server import fedit_aggregate, fedit_get_state, fedit_load_state
 from .utils import (
     get_git_hash, make_run_dir, make_run_name,
-    save_config, save_profile_report, save_results,
+    save_config, save_profile_report, save_results, append_round_result,
 )
 
 # Tokenizer name per model type
@@ -140,6 +140,10 @@ def run(args):
     print(f"  Communicated / round : {comm_per_round:,}")
     print(f"  NOTE: FedIT aggregation is INEXACT — averaging A and B separately\n")
 
+    run_name = make_run_name("fedit", args.split, args.seed)
+    run_dir  = make_run_dir(run_name, output_dir=args.output_dir or None)
+    live_rounds_path = run_dir / "rounds_live.csv"
+
     # Initial global adapter state
     global_state = fedit_get_state(model)
 
@@ -202,6 +206,7 @@ def run(args):
             "train_runtime_seconds": round(train_runtime_s, 2),
         }
         history.append(row)
+        append_round_result(row, live_rounds_path)
 
         if rnd == 1 or rnd % 5 == 0 or rnd == args.rounds:
             acc_str = f"{acc:.4f}" if acc is not None else "—"
@@ -211,8 +216,6 @@ def run(args):
                   f"time={elapsed:.1f}s")
 
     # ── save ──────────────────────────────────────────────────────────────────
-    run_name = make_run_name(f"{prefix}fedit", args.split, args.seed)
-    run_dir  = make_run_dir(run_name, output_dir=args.output_dir or None)
 
     accs = [r["test_acc"] for r in history if r["test_acc"] is not None]
 
