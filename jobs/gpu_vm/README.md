@@ -59,7 +59,7 @@ Useful environment overrides:
 CONDA_ENV=ravan MAX_PARALLEL=2 bash jobs/gpu_vm/sweep.sh
 PYTHON_BIN=/path/to/python bash jobs/gpu_vm/run_fedit.sh
 CUDA_VISIBLE_DEVICES=0 bash jobs/gpu_vm/sweep.sh
-RAVAN_HEADS=16 RAVAN_RANK=28 bash jobs/gpu_vm/sweep.sh
+BATCH_SIZE=32 RAVAN_HEADS=16 RAVAN_RANK=28 bash jobs/gpu_vm/sweep.sh
 ```
 
 Outputs:

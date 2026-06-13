@@ -8,6 +8,7 @@ SPLITS="${SPLITS:-iid noniid}"
 MAX_PARALLEL="${MAX_PARALLEL:-2}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
 FEDIT_RANK="${FEDIT_RANK:-8}"
 RAVAN_HEADS="${RAVAN_HEADS:-4}"
 RAVAN_RANK="${RAVAN_RANK:-55}"
@@ -25,7 +26,7 @@ Options:
   -h, --help         Show this help
 
 Environment defaults are also supported:
-  FEDIT_RANK=8 RAVAN_HEADS=4 RAVAN_RANK=55
+  BATCH_SIZE=16 FEDIT_RANK=8 RAVAN_HEADS=4 RAVAN_RANK=55
 EOF
 }
 
@@ -44,6 +45,7 @@ echo "Logs        : $SWEEP_LOG_DIR"
 echo "Seeds       : $SEEDS"
 echo "Splits      : $SPLITS"
 echo "Parallelism : $MAX_PARALLEL"
+echo "Batch size  : $BATCH_SIZE"
 echo "FedIT rank  : $FEDIT_RANK"
 echo "Ravan heads : $RAVAN_HEADS"
 echo "Ravan rank  : $RAVAN_RANK"
@@ -85,21 +87,21 @@ launch_job() {
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "fedit_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_fedit.sh" --split "$split" --seed "$seed" --rank "$FEDIT_RANK"
+            "${A100_VM_DIR}/run_fedit.sh" --split "$split" --seed "$seed" --rank "$FEDIT_RANK" --batch_size "$BATCH_SIZE"
     done
 done
 
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "ravan_gs_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_ravan_gs.sh" --split "$split" --seed "$seed" --heads "$RAVAN_HEADS" --rank "$RAVAN_RANK"
+            "${A100_VM_DIR}/run_ravan_gs.sh" --split "$split" --seed "$seed" --heads "$RAVAN_HEADS" --rank "$RAVAN_RANK" --batch_size "$BATCH_SIZE"
     done
 done
 
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "ravan_svd_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_ravan_svd.sh" --split "$split" --seed "$seed" --heads "$RAVAN_HEADS" --rank "$RAVAN_RANK"
+            "${A100_VM_DIR}/run_ravan_svd.sh" --split "$split" --seed "$seed" --heads "$RAVAN_HEADS" --rank "$RAVAN_RANK" --batch_size "$BATCH_SIZE"
     done
 done
 
