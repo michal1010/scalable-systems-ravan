@@ -8,6 +8,26 @@ SPLITS="${SPLITS:-iid noniid}"
 MAX_PARALLEL="${MAX_PARALLEL:-2}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
+FEDIT_RANK="${FEDIT_RANK:-8}"
+RAVAN_HEADS="${RAVAN_HEADS:-4}"
+RAVAN_RANK="${RAVAN_RANK:-55}"
+
+usage() {
+    cat <<'EOF'
+Usage: bash jobs/gpu_vm/sweep.sh [options]
+
+Options:
+  --heads N          Ravan heads; alias for --ravan-heads
+  --rank N           Ravan per-head rank; alias for --ravan-rank
+  --ravan-heads N    Ravan heads
+  --ravan-rank N     Ravan per-head rank
+  --fedit-rank N     FedIT LoRA rank
+  -h, --help         Show this help
+
+Environment defaults are also supported:
+  FEDIT_RANK=8 RAVAN_HEADS=4 RAVAN_RANK=55
+EOF
+}
 
 SWEEP_DIR="${SWEEP_DIR:-${RESULTS_ROOT}/sweep_${RUN_ID}}"
 PARTS_DIR="${SWEEP_DIR}/parts"
@@ -24,6 +44,9 @@ echo "Logs        : $SWEEP_LOG_DIR"
 echo "Seeds       : $SEEDS"
 echo "Splits      : $SPLITS"
 echo "Parallelism : $MAX_PARALLEL"
+echo "FedIT rank  : $FEDIT_RANK"
+echo "Ravan heads : $RAVAN_HEADS"
+echo "Ravan rank  : $RAVAN_RANK"
 echo ""
 
 declare -a PIDS=()
@@ -62,21 +85,21 @@ launch_job() {
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "fedit_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_fedit.sh" --split "$split" --seed "$seed"
+            "${A100_VM_DIR}/run_fedit.sh" --split "$split" --seed "$seed" --rank "$FEDIT_RANK"
     done
 done
 
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "ravan_gs_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_ravan_gs.sh" --split "$split" --seed "$seed"
+            "${A100_VM_DIR}/run_ravan_gs.sh" --split "$split" --seed "$seed" --heads "$RAVAN_HEADS" --rank "$RAVAN_RANK"
     done
 done
 
 for split in $SPLITS; do
     for seed in $SEEDS; do
         launch_job "ravan_svd_${split}_seed${seed}" \
-            "${A100_VM_DIR}/run_ravan_svd.sh" --split "$split" --seed "$seed"
+            "${A100_VM_DIR}/run_ravan_svd.sh" --split "$split" --seed "$seed" --heads "$RAVAN_HEADS" --rank "$RAVAN_RANK"
     done
 done
 
