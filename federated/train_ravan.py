@@ -43,7 +43,7 @@ from .plot import plot_all, plot_single_run
 from .server import ravan_aggregate, ravan_get_upload, ravan_load_global
 from .utils import (
     get_git_hash, make_run_dir, make_run_name,
-    save_config, save_profile_report, save_results,
+    save_config, save_profile_report, save_results, append_round_result,
 )
 from .warmup import federated_svd_init
 
@@ -238,6 +238,8 @@ def run(args):
     history = []
     profile_client_times: list[float] = []
     profile_peak_gpu_mb:  list[float] = []
+    live_rounds_path = run_dir / "rounds_live.csv"
+
 
     print(f"Ravan — init={args.init}  model={args.model_type}  split={args.split}  "
           f"seed={args.seed}  rounds={args.rounds}  cpr={args.clients_per_round}  "
@@ -291,6 +293,9 @@ def run(args):
             "train_runtime_seconds": round(train_runtime_s, 2),
         }
         history.append(row)
+        append_round_result(row, live_rounds_path)
+
+
 
         if rnd == 1 or rnd % 5 == 0 or rnd == args.rounds:
             acc_str = f"{acc:.4f}" if acc is not None else "—"

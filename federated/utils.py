@@ -47,22 +47,14 @@ def save_config(cfg: dict, run_dir: Path) -> None:
     print(f"Config  → {path}")
 
 
-def save_profile_report(profile_data: dict, run_dir: Path) -> None:
-    """Save profiling metrics to run_dir/profile_report.json and print summary."""
-    path = run_dir / "profile_report.json"
-    with open(path, "w") as f:
-        json.dump(profile_data, f, indent=2)
-
-    print("\n=== PROFILE REPORT ===")
-    if profile_data.get("peak_gpu_memory_mb") is not None:
-        print(f"  Peak GPU memory    : {profile_data['peak_gpu_memory_mb']:.0f} MB")
-    print(f"  Avg time/client    : {profile_data['avg_client_time_s']:.2f} s")
-    print(f"  Time for 2 rounds  : {profile_data['total_2round_time_s']:.1f} s")
-    est_s = profile_data.get("estimated_total_s", 0)
-    print(f"  Estimated total    : {est_s:.0f} s  ({est_s / 3600:.2f} h)  "
-          f"[{profile_data.get('total_rounds_requested', '?')} rounds]")
-    print(f"  Profile report  → {path}")
-    print("=== END PROFILE ===\n")
+def append_round_result(row: dict, csv_path: Path) -> None:
+    """Append one completed round to a live per-run CSV."""
+    write_header = not csv_path.exists()
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def save_results(
