@@ -21,3 +21,8 @@ results/*.png
 
 paper_assets
 results
+
+final_results/
+federated_model/
+federated_bert/
+local_*/
