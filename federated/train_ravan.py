@@ -142,6 +142,7 @@ def run(args):
     model.to(device)
 
     print(f"\nParameter summary (Ravan, init={args.init}):")
+    print(f"  Adapter config       : heads={args.heads}  rank={args.rank}")
     print_param_summary(model)
 
     param_detail   = count_params_detailed(model)
