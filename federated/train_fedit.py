@@ -152,6 +152,7 @@ def run(args):
     history = []
     profile_client_times: list[float] = []
     profile_peak_gpu_mb:  list[float] = []
+    best_acc = -1.0
 
     prefix = "" if args.model_type == "distilbert" else f"{args.model_type}_"
     print(f"{method_label} — split={args.split}  seed={args.seed}  "
@@ -194,6 +195,17 @@ def run(args):
         if rnd % args.eval_every == 0 or rnd == args.rounds:
             fedit_load_state(model, global_state)
             acc = evaluate(model, test_loader, device)
+            if acc > best_acc:
+                best_acc = acc
+                torch.save({
+                    "round": rnd,
+                    "test_acc": acc,
+                    "trainable_state_dict": {
+                        n: p.detach().cpu().clone()
+                        for n, p in model.named_parameters()
+                        if p.requires_grad
+                    },
+                }, run_dir / "checkpoint_best_trainable.pt")
 
         elapsed = time.time() - t_round_start
 
