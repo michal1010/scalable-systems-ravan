@@ -239,6 +239,7 @@ def run(args):
     profile_client_times: list[float] = []
     profile_peak_gpu_mb:  list[float] = []
     live_rounds_path = run_dir / "rounds_live.csv"
+    best_acc = -1.0
 
 
     print(f"Ravan — init={args.init}  model={args.model_type}  split={args.split}  "
@@ -281,6 +282,17 @@ def run(args):
         if rnd % args.eval_every == 0 or rnd == args.rounds:
             ravan_load_global(model, global_upload)
             acc = evaluate(model, test_loader, device)
+            if acc > best_acc:
+                best_acc = acc
+                torch.save({
+                    "round": rnd,
+                    "test_acc": acc,
+                    "trainable_state_dict": {
+                        n: p.detach().cpu().clone()
+                        for n, p in model.named_parameters()
+                        if p.requires_grad
+                    },
+                }, run_dir / "checkpoint_best_trainable.pt")
 
         elapsed = time.time() - t_round_start
 
