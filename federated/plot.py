@@ -44,22 +44,26 @@ RESULTS_DIR = Path(__file__).parent.parent / "results"
 # ── visual identity ────────────────────────────────────────────────────────────
 
 METHOD_ORDER = [
-    "fedit", "ravan_gram_schmidt", "ravan_svd",
-    "t5_fedit", "t5_ravan_gram_schmidt", "t5_ravan_svd",
+    "no_lora", "fedit", "ravan_gram_schmidt", "ravan_svd",
+    "t5_no_lora", "t5_fedit", "t5_ravan_gram_schmidt", "t5_ravan_svd",
 ]
 
 METHOD_LABELS = {
+    "no_lora":                "No-LoRA",
     "fedit":                  "FedIT",
     "ravan_gram_schmidt":     "Ravan-GS",
     "ravan_svd":              "Ravan-SVD",
+    "t5_no_lora":             "T5-No-LoRA",
     "t5_fedit":               "T5-FedIT",
     "t5_ravan_gram_schmidt":  "T5-Ravan-GS",
     "t5_ravan_svd":           "T5-Ravan-SVD",
 }
 METHOD_COLORS = {
+    "no_lora":                "#7f8c8d",   # gray
     "fedit":                  "#e74c3c",   # red
     "ravan_gram_schmidt":     "#27ae60",   # green
     "ravan_svd":              "#2980b9",   # blue
+    "t5_no_lora":             "#566573",   # dark gray
     "t5_fedit":               "#c0392b",   # dark red
     "t5_ravan_gram_schmidt":  "#1e8449",   # dark green
     "t5_ravan_svd":           "#1a5276",   # dark blue
