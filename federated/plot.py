@@ -51,7 +51,7 @@ METHOD_ORDER = [
 METHOD_LABELS = {
     "fedit":                  "FedIT",
     "ravan_gram_schmidt":     "Ravan-GS",
-    "ravan_svd":              "Ravan-SVD",,
+    "ravan_svd":              "Ravan-SVD",
     "t5_fedit":               "T5-FedIT",
     "t5_ravan_gram_schmidt":  "T5-Ravan-GS",
     "t5_ravan_svd":           "T5-Ravan-SVD",
