@@ -65,13 +65,6 @@ launch_job() {
 
 for split in $SPLITS; do
     for seed in $SEEDS; do
-        launch_job "t5_no_lora_${split}_seed${seed}" \
-            "${GPU_VM_DIR}/run_t5_no_lora.sh" --split "$split" --seed "$seed" "$@"
-    done
-done
-
-for split in $SPLITS; do
-    for seed in $SEEDS; do
         launch_job "t5_fedit_${split}_seed${seed}" \
             "${GPU_VM_DIR}/run_t5_fedit.sh" --split "$split" --seed "$seed" "$@"
     done
