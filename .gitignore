@@ -18,6 +18,7 @@ results/*.png
 
 # IDE
 .idea/
+/.vscode/launch.json
 
 paper_assets
 results
@@ -26,3 +27,6 @@ final_results/
 federated_model/
 federated_bert/
 local_*/
+results_new_iid/
+reults_a100_vm
+new*/
