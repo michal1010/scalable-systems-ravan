@@ -4,17 +4,20 @@ Algorithm (Section 3.3 of the report):
   1. Select a subset of clients for the warm-up phase.
   2. Each client trains a temporary LoRA model of total rank R = heads * rank
      for warmup_steps gradient steps.
-  3. Each client computes its update product  ΔW_c = B_c @ A_c  per layer.
-     The server aggregates PRODUCTS, not factors — avoiding FedIT mismatch.
-  4. Server averages: ΔW_warm = mean_c(ΔW_c) per layer (or weighted by examples).
-  5. Server runs truncated SVD on each ΔW_warm:
+  3. Each client uploads the temporary LoRA FACTORS B_c [d_out×R] and A_c [R×d_in]
+     per adapted layer (not the full product ΔW_c).
+     Communication cost per layer per client: R*(d_out + d_in).
+  4. Server reconstructs ΔW_c = B_c @ A_c internally for each client, then
+     aggregates PRODUCTS — avoiding FedIT factor-averaging mismatch.
+  5. Server averages: ΔW_warm = mean_c(ΔW_c) per layer (or weighted by examples).
+  6. Server runs truncated SVD on each ΔW_warm:
          ΔW_warm ≈ U_R  Σ_R  Vh_R
-  6. Singular vectors (not singular values) initialize Ravan's frozen bases:
+  7. Singular vectors (not singular values) initialize Ravan's frozen bases:
          B_i = U_R[:, (i-1)*r : i*r],   A_i = Vh_R[(i-1)*r : i*r, :]
      H_i = 0 and s_i = 1 so the adapter starts at zero.
 
-Raw client data stays local; only temporary LoRA update products ΔW_c are
-communicated, not raw examples.
+Raw client data stays local; clients upload only temporary LoRA factors B_c, A_c.
+The warm-up model (LoRA state + head) is fully discarded after init.
 """
 
 import csv
@@ -42,6 +45,12 @@ def federated_svd_init(
     run_dir: Path | None = None,
     cache_dir: str | None = None,
     train_head: bool = True,
+    make_model_fn=None,
+    inject_lora_fn=None,
+    get_lora_layers_fn=None,
+    count_params_fn=None,
+    use_amp: bool = False,
+    grad_accum_steps: int = 1,
 ) -> tuple[
     list[tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]],
     dict,
@@ -61,12 +70,28 @@ def federated_svd_init(
         run_dir           : directory to save optional diagnostics
         cache_dir         : HuggingFace cache directory for model loading
         train_head        : whether to include head in the temporary warm-up model
+        make_model_fn     : factory(train_head, cache_dir) -> nn.Module; defaults to DistilBERT
+        inject_lora_fn    : fn(model, rank) -> None; defaults to DistilBERT inject_lora
+        get_lora_layers_fn: fn(model) -> iterator; defaults to DistilBERT get_lora_layers
+        count_params_fn   : fn(model) -> dict; defaults to DistilBERT count_params_detailed
+        use_amp           : enable mixed-precision for warm-up client training (CUDA only)
+        grad_accum_steps  : gradient accumulation steps for warm-up client training
 
     Returns:
         svd_per_layer : list of length num_transformer_layers.
                         Each element is (q_svd, v_svd) where each svd is (U_R, Vh_R).
         costs         : dict with all warm-up cost and timing fields.
     """
+    # Resolve factory functions (default to DistilBERT)
+    if make_model_fn is None:
+        make_model_fn = lambda th, cd: make_distilbert(train_head=th, cache_dir=cd)
+    if inject_lora_fn is None:
+        inject_lora_fn = lambda m, r: inject_lora(m, rank=r)
+    if get_lora_layers_fn is None:
+        get_lora_layers_fn = get_lora_layers
+    if count_params_fn is None:
+        count_params_fn = count_params_detailed
+
     t_total_start = time.time()
 
     rng = np.random.default_rng(seed)
@@ -77,9 +102,9 @@ def federated_svd_init(
           f"steps={warmup_steps}, weighting={warmup_weighting}")
 
     # Count warm-up trainable params from one temporary model
-    _tmp = make_distilbert(train_head=train_head, cache_dir=cache_dir)
-    inject_lora(_tmp, rank=total_rank)
-    _warmup_detail = count_params_detailed(_tmp)
+    _tmp = make_model_fn(train_head, cache_dir)
+    inject_lora_fn(_tmp, total_rank)
+    _warmup_detail = count_params_fn(_tmp)
     warmup_trainable_params = _warmup_detail["total_trainable_params"]
     del _tmp
 
@@ -89,26 +114,33 @@ def federated_svd_init(
     t_train_start = time.time()
 
     for cid in selected:
-        warmup_model = make_distilbert(train_head=train_head, cache_dir=cache_dir)
-        inject_lora(warmup_model, rank=total_rank)
+        warmup_model = make_model_fn(train_head, cache_dir)
+        inject_lora_fn(warmup_model, total_rank)
 
-        local_train(warmup_model, client_loaders[cid], warmup_steps, lr, device)
+        local_train(
+            warmup_model, client_loaders[cid], warmup_steps, lr, device,
+            use_amp=use_amp, grad_accum_steps=grad_accum_steps,
+        )
 
         w = float(len(client_loaders[cid].dataset)) if warmup_weighting == "examples" else 1.0
         weights.append(w)
 
-        layers = list(get_lora_layers(warmup_model))
-        delta_Ws: list[torch.Tensor] = []
+        # Client uploads factors B_c and A_c per layer (not the full product ΔW_c).
+        # Server reconstructs ΔW_c = B_c @ A_c internally before aggregating.
+        layers = list(get_lora_layers_fn(warmup_model))
+        client_factors: list[tuple[torch.Tensor, torch.Tensor]] = []
         for ll in layers:
             with torch.no_grad():
-                dW = (ll.lora_B @ ll.lora_A).cpu()
-            delta_Ws.append(dW)
+                B_c = ll.lora_B.detach().cpu().clone()   # [d_out, R]
+                A_c = ll.lora_A.detach().cpu().clone()   # [R, d_in]
+            client_factors.append((B_c, A_c))
 
+        # Server-side: reconstruct ΔW_c = B_c @ A_c, then accumulate weighted sum.
         if delta_W_sum is None:
-            delta_W_sum = [w * dW.clone() for dW in delta_Ws]
+            delta_W_sum = [w * (B_c @ A_c) for (B_c, A_c) in client_factors]
         else:
-            for i, dW in enumerate(delta_Ws):
-                delta_W_sum[i] = delta_W_sum[i] + w * dW
+            for i, (B_c, A_c) in enumerate(client_factors):
+                delta_W_sum[i] = delta_W_sum[i] + w * (B_c @ A_c)
 
         del warmup_model
         if device.type == "cuda":
@@ -120,9 +152,12 @@ def federated_svd_init(
     total_weight = sum(weights)
     delta_W_avg = [dW / total_weight for dW in delta_W_sum]
 
-    # Warm-up communicated params: each client uploads one ΔW per adapted layer
-    warmup_comm_per_client = sum(dW.numel() for dW in delta_W_avg)
-    warmup_communicated_params = warmup_comm_per_client * len(selected)
+    # Communication cost: count actual uploaded factors B_c and A_c.
+    # client_factors from the last client has the same shapes as all others.
+    warmup_factor_comm_per_client = sum(
+        B_c.numel() + A_c.numel() for (B_c, A_c) in client_factors
+    )
+    warmup_communicated_params = warmup_factor_comm_per_client * len(selected)
 
     t_svd_start = time.time()
     svd_results: list[tuple[torch.Tensor, torch.Tensor]] = []
@@ -155,6 +190,7 @@ def federated_svd_init(
         "warmup_weighting":          warmup_weighting,
         "warmup_trainable_params":   warmup_trainable_params,
         "warmup_communicated_params": warmup_communicated_params,
+        "warmup_upload_mode":        "lora_factors",
         "warmup_train_runtime_s":    round(train_runtime_s, 2),
         "warmup_svd_runtime_s":      round(svd_runtime_s, 4),
         "warmup_total_runtime_s":    round(total_runtime_s, 2),

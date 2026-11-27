@@ -34,6 +34,7 @@ Outputs written to paper_assets/:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import math
 from pathlib import Path
@@ -241,10 +242,19 @@ def make_main_results_table(df: pd.DataFrame, out_tables: Path) -> None:
             drop = s_iid["mean"] - s_noniid["mean"]
             iid_to_noniid_drop = f"{drop:.4f}"
 
-        comm = row.get("communicated_params_per_round", "?")
         adapter_p = row.get("trainable_adapter_params", "?")
-        head_p    = row.get("trainable_head_params", "?")
-        total_p   = row.get("total_trainable_params", "?")
+
+        # Adapter comm: prefer explicit field, fall back to subtracting head from total comm/client
+        adapter_comm = row.get("communicated_adapter_params_per_client")
+        if adapter_comm is None or (isinstance(adapter_comm, float) and math.isnan(adapter_comm)):
+            comm_round = row.get("communicated_params_per_round")
+            cpr = row.get("clients_per_round", 3)
+            head_p = row.get("trainable_head_params", 0)
+            if comm_round is not None and cpr:
+                try:
+                    adapter_comm = int(comm_round) // int(cpr) - int(head_p)
+                except (TypeError, ValueError):
+                    adapter_comm = None
 
         init_str = str(row.get("init", "—"))
         if init_str == "lora":
@@ -259,15 +269,15 @@ def make_main_results_table(df: pd.DataFrame, out_tables: Path) -> None:
             rank_str = f"h={row['heads']}, r={row['rank']}"
 
         rows.append({
-            "Method":           METHOD_DISPLAY[method],
-            "Init":             init_str,
-            "Config":           rank_str,
-            "Trainable params": _fmt(total_p, 0),
-            "Comm. params/round": _fmt(comm, 0),
-            "IID Acc. mean±std":     iid_mean_std,
-            "Non-IID Acc. mean±std": noniid_mean_std,
-            "Non-IID gap vs FedIT":  gap_vs_fedit,
-            "IID-to-Non-IID drop":   iid_to_noniid_drop,
+            "Method":             METHOD_DISPLAY[method],
+            "Init.":              init_str,
+            "Config.":            rank_str,
+            "Adapter trainable":  _fmt(adapter_p, 0),
+            "Adapter comm.":      _fmt(adapter_comm, 0),
+            "I.I.D. Acc.":        iid_mean_std,
+            "Non-I.I.D. Acc.":    noniid_mean_std,
+            "Gap":                gap_vs_fedit,
+            "Drop":               iid_to_noniid_drop,
         })
 
     if not rows:
@@ -338,7 +348,8 @@ def make_init_costs_table(df: pd.DataFrame, out_tables: Path) -> None:
     stats = _method_split_stats(df)
 
     rows = []
-    for method in METHOD_KEY_ORDER:
+    # Only include Ravan methods (not FedIT) per report Table 5
+    for method in ["ravan_gram_schmidt", "ravan_svd"]:
         sub = df[df["method"] == method]
         if sub.empty:
             continue
@@ -347,49 +358,40 @@ def make_init_costs_table(df: pd.DataFrame, out_tables: Path) -> None:
         s_noniid = stats.get((method, "noniid"), {})
         noniid_str = _mean_std_str(s_noniid["mean"], s_noniid["std"], s_noniid["n"]) if s_noniid else "—"
 
-        comm_round = _fmt(row.get("communicated_params_per_round"), 0)
+        # Main comm per client (adapter only)
+        adapter_comm = row.get("communicated_adapter_params_per_client")
+        if adapter_comm is None or (isinstance(adapter_comm, float) and math.isnan(adapter_comm)):
+            comm_round = row.get("communicated_params_per_round")
+            cpr = row.get("clients_per_round", 3)
+            head_p = row.get("trainable_head_params", 0)
+            if comm_round is not None and cpr:
+                try:
+                    adapter_comm = int(comm_round) // int(cpr) - int(head_p)
+                except (TypeError, ValueError):
+                    adapter_comm = None
+        main_comm_str = _fmt(adapter_comm, 0)
 
-        if method == "fedit":
+        if method == "ravan_gram_schmidt":
             rows.append({
-                "Method":            METHOD_DISPLAY[method],
-                "Initialization":    "LoRA (Kaiming/zeros)",
-                "Warm-up steps":     "—",
+                "Initialization":    "Gram-Schmidt",
+                "Warm-up stages":    "0",
                 "Warm-up clients":   "—",
-                "Temporary rank":    "—",
-                "Extra comm. (params)": "0",
-                "Warm-up runtime (s)":  "—",
-                "SVD runtime (s)":      "—",
-                "Total init runtime (s)": "—",
-                "Main comm./round":     comm_round,
-                "Final Non-IID Acc.":   noniid_str,
-            })
-        elif method == "ravan_gram_schmidt":
-            rows.append({
-                "Method":            METHOD_DISPLAY[method],
-                "Initialization":    "Gram-Schmidt QR",
-                "Warm-up steps":     "—",
-                "Warm-up clients":   "—",
-                "Temporary rank":    "—",
-                "Extra comm. (params)": "0",
-                "Warm-up runtime (s)":  "—",
-                "SVD runtime (s)":      "—",
-                "Total init runtime (s)": "—",
-                "Main comm./round":     comm_round,
-                "Final Non-IID Acc.":   noniid_str,
+                "Temp. rank":        "—",
+                "Extra comm.":       "0",
+                "SVD runtime (s)":   "—",
+                "Main comm.":        main_comm_str,
+                "Non-I.I.D. Acc.":   noniid_str,
             })
         else:  # ravan_svd
             rows.append({
-                "Method":            METHOD_DISPLAY[method],
-                "Initialization":    "Federated SVD warm-up",
-                "Warm-up steps":     _fmt(row.get("warmup_steps"), 0),
+                "Initialization":    "SVD warm-up",
+                "Warm-up stages":    "1",
                 "Warm-up clients":   _fmt(row.get("warmup_clients"), 0),
-                "Temporary rank":    _fmt(row.get("warmup_rank"), 0),
-                "Extra comm. (params)": _fmt(row.get("warmup_communicated_params"), 0),
-                "Warm-up runtime (s)":  _fmt(row.get("warmup_train_runtime_s"), 1),
-                "SVD runtime (s)":      _fmt(row.get("warmup_svd_runtime_s"), 3),
-                "Total init runtime (s)": _fmt(row.get("warmup_total_runtime_s"), 1),
-                "Main comm./round":     comm_round,
-                "Final Non-IID Acc.":   noniid_str,
+                "Temp. rank":        _fmt(row.get("warmup_rank"), 0),
+                "Extra comm.":       _fmt(row.get("warmup_communicated_params"), 0),
+                "SVD runtime (s)":   _fmt(row.get("warmup_svd_runtime_s"), 3),
+                "Main comm.":        main_comm_str,
+                "Non-I.I.D. Acc.":   noniid_str,
             })
 
     if rows:
@@ -410,15 +412,22 @@ def make_setup_summary_table(df: pd.DataFrame, out_tables: Path) -> None:
         return
     row = df.iloc[0]
     params = {
-        "Model":           "DistilBERT (distilbert-base-uncased)",
-        "Dataset":         "20 Newsgroups (20 classes)",
-        "Clients":         str(row.get("clients", 20)),
-        "Clients/round":   str(row.get("clients_per_round", 3)),
-        "Local steps":     str(row.get("local_steps", 50)),
-        "Rounds":          str(row.get("rounds", 50)),
-        "Non-IID alpha":   str(row.get("dirichlet_alpha", 0.3)),
-        "Seeds":           "0, 1, 2",
-        "Adapted layers":  "12 (q_lin + v_lin in all 6 transformer layers)",
+        "model":             str(row.get("model_name", "distilbert-base-uncased")),
+        "dataset":           "20 Newsgroups",
+        "preprocessing":     "remove=headers,footers,quotes",
+        "clients":           str(row.get("clients", 20)),
+        "clients_per_round": str(row.get("clients_per_round", 3)),
+        "local_steps":       str(row.get("local_steps", 50)),
+        "rounds":            str(row.get("rounds", 50)),
+        "splits":            "iid, noniid",
+        "dirichlet_alpha":   str(row.get("dirichlet_alpha", 0.3)),
+        "adapter_placement": "q_lin, v_lin (all 6 transformer layers)",
+        "max_length":        str(row.get("max_length", 128)),
+        "batch_size":        str(row.get("batch_size", 16)),
+        "optimizer":         str(row.get("optimizer", "AdamW")),
+        "weight_decay":      str(row.get("weight_decay", 0.01)),
+        "loss":              str(row.get("loss", "CrossEntropyLoss")),
+        "seeds":             "0, 1, 2",
     }
     setup_df = pd.DataFrame(list(params.items()), columns=["Parameter", "Value"])
     setup_df.to_csv(out_tables / "setup_summary.csv", index=False)
@@ -857,7 +866,54 @@ def main():
     figures_generated = [str(p.relative_to(out_dir)) for p in sorted(out_figures.iterdir())]
     write_summary_md(summaries, out_dir, tables_generated, figures_generated)
 
+    # ── manifest ──────────────────────────────────────────────────────────────
+    _write_manifest(summaries, out_dir)
+
     print(f"\nDone. Paper assets in: {out_dir}/")
+
+
+def _write_manifest(summaries: pd.DataFrame, out_dir: Path) -> None:
+    """Write paper_assets/manifest.json describing which runs were used."""
+    methods = ["fedit", "ravan_gram_schmidt", "ravan_svd"]
+    splits  = ["iid", "noniid"]
+    seeds   = [0, 1, 2]
+
+    expected_configs = [
+        {"method": m, "split": s, "seed": sd}
+        for m in methods
+        for s in splits
+        for sd in seeds
+    ]
+
+    runs_used = []
+    if not summaries.empty:
+        for _, row in summaries.iterrows():
+            runs_used.append({
+                "run_name": str(row.get("run_name", "")),
+                "method":   str(row.get("method",   "")),
+                "split":    str(row.get("split",    "")),
+                "seed":     int(row.get("seed", -1)),
+            })
+
+    # Find which expected configs are missing from the runs we have
+    present = {(r["method"], r["split"], r["seed"]) for r in runs_used}
+    missing_configs = [
+        cfg for cfg in expected_configs
+        if (cfg["method"], cfg["split"], cfg["seed"]) not in present
+    ]
+
+    manifest = {
+        "generated_at":     datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "n_runs_found":     len(runs_used),
+        "runs_used":        runs_used,
+        "missing_configs":  missing_configs,
+        "expected_configs": expected_configs,
+    }
+
+    path = out_dir / "manifest.json"
+    with open(path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"  → {path}")
 
 
 if __name__ == "__main__":

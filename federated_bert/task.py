@@ -1,4 +1,4 @@
-"""Classic BERT training utilities for the Flower app."""
+"""RAVAN BERT training utilities for the Flower app."""
 
 import logging
 import os
@@ -6,6 +6,7 @@ import time
 
 import torch
 from sklearn.datasets import fetch_20newsgroups
+from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -16,6 +17,8 @@ MODEL_NAME = "google/bert_uncased_L-2_H-128_A-2"
 NUM_LABELS = 20
 MAX_LENGTH = 128
 DATA_SEED = 42
+RAVAN_HEADS = 4
+RAVAN_RANK = 8
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +31,85 @@ def configure_logging():
     logging.getLogger("federated_bert").setLevel(level)
 
 
+class RavanLinear(nn.Module):
+    """Frozen linear layer plus trainable RAVAN heads."""
+
+    def __init__(self, linear, heads, rank):
+        super().__init__()
+        self.linear = linear
+        self.heads = heads
+        self.rank = rank
+
+        self.linear.weight.requires_grad = False
+        if self.linear.bias is not None:
+            self.linear.bias.requires_grad = False
+
+        self.register_buffer(
+            "B",
+            torch.randn(heads, linear.out_features, rank) / rank**0.5,
+        )
+        self.register_buffer(
+            "A",
+            torch.randn(heads, rank, linear.in_features) / rank**0.5,
+        )
+        self.H = nn.Parameter(torch.zeros(heads, rank, rank))
+        self.scales = nn.Parameter(torch.ones(heads))
+
+    def forward(self, x):
+        base_output = self.linear(x)
+        ravan_update = torch.zeros_like(base_output)
+
+        for head in range(self.heads):
+            projected = x @ self.A[head].transpose(0, 1)
+            mixed = projected @ self.H[head].transpose(0, 1)
+            head_update = mixed @ self.B[head].transpose(0, 1)
+            ravan_update = ravan_update + self.scales[head] * head_update
+
+        return base_output + ravan_update
+
+
+def add_ravan_to_bert_attention(model, heads, rank):
+    for parameter in model.parameters():
+        parameter.requires_grad = False
+
+    for layer in model.bert.encoder.layer:
+        attention = layer.attention.self
+        attention.query = RavanLinear(attention.query, heads, rank)
+        attention.value = RavanLinear(attention.value, heads, rank)
+
+    for parameter in model.classifier.parameters():
+        parameter.requires_grad = True
+
+
+def log_trainable_parameters(model):
+    trainable = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
+    total = sum(parameter.numel() for parameter in model.parameters())
+    logger.info(
+        "trainable parameters: %s/%s (%.2f%%)",
+        f"{trainable:,}",
+        f"{total:,}",
+        100 * trainable / total,
+    )
+
+
 def make_model():
-    """Build a fresh BERT classifier whose full state is federated."""
-    logger.info("loading model %s with %s labels", MODEL_NAME, NUM_LABELS)
-    return AutoModelForSequenceClassification.from_pretrained(
+    """Build a fresh BERT classifier with federated RAVAN adapters."""
+    logger.info(
+        "loading RAVAN model %s labels=%s heads=%s rank=%s",
+        MODEL_NAME,
+        NUM_LABELS,
+        RAVAN_HEADS,
+        RAVAN_RANK,
+    )
+    model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
         num_labels=NUM_LABELS,
     )
+    add_ravan_to_bert_attention(model, RAVAN_HEADS, RAVAN_RANK)
+    log_trainable_parameters(model)
+    return model
 
 
 def load_client_data(partition_id, num_partitions, batch_size):
@@ -121,7 +196,7 @@ def make_dataset(tokenizer, texts, labels):
 
 
 def train(model, train_loader, epochs, learning_rate, device):
-    """Train all BERT parameters on one client's local partition."""
+    """Train the RAVAN adapters and classifier on one client's local partition."""
     logger.info(
         "starting local training examples=%s batches=%s epochs=%s lr=%s device=%s",
         len(train_loader.dataset),
@@ -132,7 +207,10 @@ def train(model, train_loader, epochs, learning_rate, device):
     )
     model.to(device)
     model.train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(
+        (parameter for parameter in model.parameters() if parameter.requires_grad),
+        lr=learning_rate,
+    )
     total_loss = 0.0
 
     started_at = time.perf_counter()

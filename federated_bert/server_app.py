@@ -1,4 +1,4 @@
-"""Flower server for three-client classic BERT FedAvg."""
+"""Flower server for three-client RAVAN BERT FedAvg."""
 
 import logging
 
